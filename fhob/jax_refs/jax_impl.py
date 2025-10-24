@@ -32,7 +32,7 @@ def name_transpose(cotangent, *_args, name, **_kwargs):
 ad.primitive_jvps[name_p] = name_jvp
 ad.primitive_transposes[name_p] = name_transpose
 
-jax.config.update("jax_default_matmul_precision", "F32_F32_F32")
+jax.config.update("jax_default_matmul_precision", "BF16_BF16_F32")
 
 
 def random_like_tree(tree, rng):
