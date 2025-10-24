@@ -40,10 +40,10 @@ def main():
 
     # scale = jnp.array(1.0 / jnp.sqrt(d_in), dtype=jnp.float32)
 
-    assert nq == 100
-    assert nkv == 150
-    assert d_in == 256
-    assert d_out == 256
+    assert nq == 128
+    assert nkv == 256
+    assert d_in == 64
+    assert d_out == 64
 
     expected_dq2 = torch.load(output_tensors_path / "dq2.pt").to(torch.bfloat16).cuda()
     expected_dk2 = torch.load(output_tensors_path / "dk2.pt").to(torch.bfloat16).cuda()
@@ -61,7 +61,9 @@ def main():
     )
     expected_dq2, expected_ddo = expected_dq2.unsqueeze(0), expected_ddo.unsqueeze(0)
 
-    o = torch.nn.functional.scaled_dot_product_attention(q, k, v, scale=1 / d_in**0.5, is_causal=False)
+    o = torch.nn.functional.scaled_dot_product_attention(
+        q, k, v, scale=1 / d_in**0.5, is_causal=False
+    )
     L = produce_L(q, k, is_causal=False)
     triton_dq2, triton_dk2, triton_dv2, triton_ddo = use_bwdbwd(
         q, k, v, do, o, ddq, ddk, ddv, L, 1 / d_in**0.5

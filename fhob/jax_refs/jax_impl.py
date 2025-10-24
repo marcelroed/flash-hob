@@ -633,10 +633,10 @@ if __name__ == "__main__":
     )
 
     key1, key2, key3 = jrandom.split(jrandom.PRNGKey(42), 3)
-    nq = 100
-    nkv = 150
-    d_in = 256
-    d_out = 256
+    nq = 128
+    nkv = 256
+    d_in = 64
+    d_out = 64
     dtype = jnp.bfloat16
     scale = jnp.array(1.0 / jnp.sqrt(d_in), dtype=jnp.float32)
     q = jrandom.normal(key1, (nq, d_in), dtype=dtype)
