@@ -433,6 +433,7 @@ def scuffed_save_bwd_bwd(forward_fn, backward_fn, inp, **settings):
     S = (q @ k.T) * scale
     P = softmax(S)
     _O = P @ v
+    L = jax.nn.logsumexp(S, axis=-1)
 
     torch.save(
         torch.from_numpy(np.asarray(q, dtype=np.float32)), input_tensors_path / "q.pt"
@@ -461,11 +462,28 @@ def scuffed_save_bwd_bwd(forward_fn, backward_fn, inp, **settings):
         torch.from_numpy(np.asarray(ddv, dtype=np.float32)),
         input_tensors_path / "ddv.pt",
     )
+    torch.save(
+        torch.from_numpy(np.asarray(L, dtype=np.float32)),
+        input_tensors_path / "L.pt",
+    )
 
     auto_din = auto_vjp(random_dout)
     if not isinstance(random_dout, tuple):
         random_dout = (random_dout,)
-    bwd_din = backward_fn(*random_input, *random_dout, **settings)
+    # bwd_din = backward_fn(*random_input, *random_dout, **settings)
+    bwd_din = backward_fn(
+        stats=L,
+        q=q,
+        k=k,
+        v=v,
+        o=_O,
+        do=do,
+        ddq=ddq,
+        ddk=ddk,
+        ddv=ddv,
+        scale=scale,
+        is_causal=False,
+    )
     print(f"{len(bwd_din)=}")
     # pp(diff_metrics(auto_din, bwd_din))
     dq2, dk2, dv2, ddo = bwd_din
@@ -547,7 +565,12 @@ if __name__ == "__main__":
     # jaxpr_graph(attn_bwd_bwd, q, k, v, do, q, k, v).render(filename='custom_bwd_bwd')
 
     scuffed_save_bwd_bwd(
-        attn_bwd, attn_bwd_bwd, (q, k, v, do), scale=scale, is_causal=False
+        # attn_bwd, attn_bwd_bwd, (q, k, v, do), scale=scale, is_causal=False
+        attn_bwd,
+        attn_bwd_bwd_stats,
+        (q, k, v, do),
+        scale=scale,
+        is_causal=False,
     )
 
     # attn_bwd_bwd(

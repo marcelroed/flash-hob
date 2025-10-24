@@ -28,6 +28,7 @@ def main():
     k = torch.load(input_tensors_path / "k.pt").to(torch.bfloat16).cuda()
     v = torch.load(input_tensors_path / "v.pt").to(torch.bfloat16).cuda()
     o = torch.load(input_tensors_path / "o.pt").to(torch.bfloat16).cuda()
+    l = torch.load(input_tensors_path / "L.pt").to(torch.bfloat16).cuda()
     do = torch.load(input_tensors_path / "do.pt").to(torch.bfloat16).cuda()
     ddq = torch.load(input_tensors_path / "ddq.pt").to(torch.bfloat16).cuda()
     ddk = torch.load(input_tensors_path / "ddk.pt").to(torch.bfloat16).cuda()
