@@ -313,6 +313,10 @@ def bwdbwd_kernel_stage1(
     tl.store(ddO_block_ptr, ddO_i_acc.to(ddO_block_ptr.type.element_ty))
 
 
+@triton.autotune(
+    list(filter(keep, configs)),
+    key=["Q_BLOCK_SIZE", "K_BLOCK_SIZE", "N_QUERIES", "N_KEYS", "D"],
+)
 @triton.jit
 def bwdbwd_kernel_stage2(
     # Inputs
@@ -433,6 +437,7 @@ def bwdbwd_kernel_stage2(
         shape=(N_QUERIES, D),
         strides=(stride_dOi, stride_dOd),
         block_shape=(Q_BLOCK_SIZE, D),
+        offsets=(0, 0),
         order=(1, 0),
     )
 
@@ -496,10 +501,10 @@ def bwdbwd_kernel_stage2(
         dS_ij = scale * P_ij * (dP_ij - D_i[:, None])
 
         ddP_ij = P_ij * (ddS_ij - dD_i[:, None])
-        dV2_j_acc = tl.dot(ddP_ij.T, dO_i, acc=dV2_j_acc)
+        dV2_j_acc = tl.dot(ddP_ij.T.to(dO_i.dtype), dO_i, acc=dV2_j_acc)
 
-        dK2_j_acc = tl.dot(dS_ij.T, ddQ_i, acc=dK2_j_acc)
-        dK2_j_acc = tl.dot(dS2_ij.T, Q_i, acc=dK2_j_acc)
+        dK2_j_acc = tl.dot(dS_ij.T.to(ddQ_i.dtype), ddQ_i, acc=dK2_j_acc)
+        dK2_j_acc = tl.dot(dS2_ij.T.to(Q_i.dtype), Q_i, acc=dK2_j_acc)
 
         # TODO: Try tl.dot((b, 1, k), (b, k, 1)) with acc
         Q_block_ptr = Q_block_ptr.advance((Q_BLOCK_SIZE, 0))
@@ -527,8 +532,8 @@ def bwdbwd_kernel_stage2(
         offsets=(key_block_index * K_BLOCK_SIZE, 0),
         order=(1, 0),
     )
-    tl.store(dK2_block_ptr, dK2_j_acc)
-    tl.store(dV2_block_ptr, dV2_j_acc)
+    tl.store(dK2_block_ptr, dK2_j_acc.to(dK2_block_ptr.type.element_ty))
+    tl.store(dV2_block_ptr, dV2_j_acc.to(dV2_block_ptr.type.element_ty))
 
 
 # class Bwd(torch.autograd.Function):
@@ -588,9 +593,41 @@ def use_bwdbwd(Q, K, V, O, dO, ddQ, ddK, ddV, L, scale):
         D=HIDDEN_DIM,
     )  # fmt: off
 
-    print(dQ2)
-    print(ddO)
-    return dQ2, ddO
+    # print(dQ2)
+    # print(ddO)
+
+    dK2 = torch.zeros_like(K)
+    dV2 = torch.zeros_like(V)
+    
+    bwdbwd_kernel_stage2[
+        lambda args: (triton.cdiv(N_KEYS, args["K_BLOCK_SIZE"]), batch_size)
+    ](
+        # Inputs
+        Q, K, V, D, dO, ddQ, ddK, ddV, L, dD, B,
+        # Outputs
+        dK2, dV2,
+        # Input strides
+        Q.stride(0), Q.stride(1), Q.stride(2),
+        K.stride(0), K.stride(1), K.stride(2),
+        V.stride(0), V.stride(1), V.stride(2),
+        D.stride(0), D.stride(1),
+        dO.stride(0), dO.stride(1), dO.stride(2),
+        ddQ.stride(0), ddQ.stride(1), ddQ.stride(2),
+        ddK.stride(0), ddK.stride(1), ddK.stride(2),
+        ddV.stride(0), ddV.stride(1), ddV.stride(2),
+        L.stride(0), L.stride(1),
+        dD.stride(0), dD.stride(1),
+        B.stride(0), B.stride(1),
+        # Output Strides
+        dK2.stride(0), dK2.stride(1), dK2.stride(2),
+        dV2.stride(0), dV2.stride(1), dV2.stride(2),
+        # Sizes
+        N_QUERIES, N_KEYS,
+        scale=scale,
+        D=HIDDEN_DIM,
+    )  # fmt: off
+
+    return dQ2, dK2, dV2, ddO
 
 
 def test_bwdbwd():
@@ -609,3 +646,6 @@ def test_bwdbwd():
     L = produce_L(Q, K, is_causal=False)
     scale = 1.0 / D**0.5
     use_bwdbwd(Q, K, V, O, dO, ddQ, ddK, ddV, L, scale)
+
+if __name__ == "__main__":
+    test_bwdbwd()
