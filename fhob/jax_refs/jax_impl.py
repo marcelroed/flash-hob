@@ -5,10 +5,32 @@ import jax.numpy as jnp
 import jax.random as jrandom
 from einops import einsum
 from equinox import tree_pprint as pp
-from jax import lax
+from jax import core, lax
+from jax._src.ad_checkpoint import name_p
+from jax._src.interpreters import ad
 from jax.ad_checkpoint import checkpoint_name
+from jax.interpreters.partial_eval import dce_jaxpr
 
-jax.config.update("jax_default_matmul_precision", "BF16_BF16_F32")
+
+def name_jvp(primals, tangents, *, name):
+    (x,), (xdot,) = primals, tangents
+    return name_p.bind(x, name=name), name_p.bind(
+        xdot, name=f"d{name}"
+    )  # name the tangent value!
+
+
+def name_transpose(cotangent, *_args, name, **_kwargs):
+    # print(name, type(name))
+    # print(cotangent, type(cotangent))
+    return [
+        name_p.bind(cotangent, name=f"({name})^T"),
+    ]
+
+
+ad.primitive_jvps[name_p] = name_jvp
+ad.primitive_transposes[name_p] = name_transpose
+
+jax.config.update("jax_default_matmul_precision", "F32_F32_F32")
 
 
 def random_like_tree(tree, rng):
@@ -259,7 +281,8 @@ def precompute_values(
     return d, dd, stats2
 
 
-def attn_bwd_bwd_stats(*,
+def attn_bwd_bwd_stats(
+    *,
     stats,
     q,
     k,
@@ -420,8 +443,10 @@ if __name__ == "__main__":
     print(out)
     # jaxpr_graph(bwd_vjp, (q, k, v)).render(filename='auto_bwd_bwd')
 
-    check_backward_matched(attn_fwd, attn_bwd, (q, k, v), scale=scale, is_causal=True)
-    # check_backward_matched(attn_bwd, attn_bwd_bwd, (q, k, v, do), scale=scale, is_causal=False)
+    # check_backward_matched(attn_fwd, attn_bwd, (q, k, v), scale=scale, is_causal=True)
+    check_backward_matched(
+        attn_bwd, attn_bwd_bwd, (q, k, v, do), scale=scale, is_causal=False
+    )
     # jaxpr_graph(attn_bwd_bwd, q, k, v, do, q, k, v).render(filename='custom_bwd_bwd')
 
     # def _softmax_jvp(axis, primals, tangents):
@@ -430,14 +455,14 @@ if __name__ == "__main__":
     #   x_dot = checkpoint_name(x_dot, 'x_dot')
     #   return y, y * (x_dot - jnp.sum((y * x_dot).astype(jnp.float32), axis, where=where, keepdims=True, dtype=jnp.float32)).astype(x_dot.dtype)
 
-    from ttt.model.grad_viz import jaxpr_graph
+    # from ttt.model.grad_viz import jaxpr_graph
 
-    s = q @ k.T
-    ds = q @ k.T
-    jaxpr_graph(
-        partial(_softmax_jvp, -1), (s, None, -jnp.inf), (ds, None, None)
-    ).render(filename="softmax_jvp")
-    _out, softmax_vjp_fun = jax.vjp(
-        partial(_softmax, axis=-1, where=None, initial=-jnp.inf), s
-    )
-    jaxpr_graph(softmax_vjp_fun, ds).render(filename="softmax_vjp")
+    # s = q @ k.T
+    # ds = q @ k.T
+    # jaxpr_graph(
+    #     partial(_softmax_jvp, -1), (s, None, -jnp.inf), (ds, None, None)
+    # ).render(filename="softmax_jvp")
+    # _out, softmax_vjp_fun = jax.vjp(
+    #     partial(_softmax, axis=-1, where=None, initial=-jnp.inf), s
+    # )
+    # jaxpr_graph(softmax_vjp_fun, ds).render(filename="softmax_vjp")

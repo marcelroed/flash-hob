@@ -1,3 +1,4 @@
+import torch
 import triton
 import triton.language as tl
 
@@ -491,3 +492,21 @@ def bwdbwd_kernel_stage2(
     )
     tl.store(dK2_block_ptr, dK2_j_acc)
     tl.store(dV2_block_ptr, dV2_j_acc)
+
+
+
+
+
+
+class Bwd(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx,
+        Q, K, V, dO, L, scale,
+    ):
+        batch_size, n_queries, d = Q.shape
+        n_keys = K.shape[1]
+
+        T_q = 
+
+        
