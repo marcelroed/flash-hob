@@ -586,6 +586,7 @@ def use_bwdbwd(Q, K, V, O, dO, ddQ, ddK, ddV, L, scale):
 
     print(dQ2)
     print(ddO)
+    return dQ2, ddO
 
 
 def test_bwdbwd():
