@@ -62,7 +62,9 @@ def main():
 
     o = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=False)
     L = produce_L(q, k, is_causal=False)
-    triton_dq2, triton_ddo = use_bwdbwd(q, k, v, do, o, ddq, ddk, ddv, L, 1 / d_in**0.5)
+    triton_dq2, triton_dk2, triton_dv2, triton_ddo = use_bwdbwd(
+        q, k, v, do, o, ddq, ddk, ddv, L, 1 / d_in**0.5
+    )
 
     print(torch.std(triton_dq2 - expected_dq2))
     # torch.testing.assert_close(triton_dq2, expected_dq2)
