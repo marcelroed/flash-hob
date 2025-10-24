@@ -1,8 +1,8 @@
 import torch
+import triton
 import triton.language as tl
 from einops import einsum
 from torch import autograd
-import triton
 
 
 def cdiv(a, b):
@@ -249,4 +249,10 @@ def test_flash():
     dV = v.grad
 
 
-
+def produce_L(Q, K, is_causal):
+    if is_causal:
+        raise ValueError("Causal attention is not supported yet")
+    scale = Q.shape[-1] ** -0.5
+    S = einsum(Q, K, "batch query d, batch key d -> batch query key") * scale
+    L = torch.logsumexp(S, dim=-1)
+    return L

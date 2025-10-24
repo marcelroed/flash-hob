@@ -2,7 +2,34 @@ import torch
 import triton
 import triton.language as tl
 
+from fhob.triton_flash import produce_L
 
+
+def cdiv(a, b):
+    return (a + b - 1) // b
+
+
+configs = [
+    triton.Config({"Q_BLOCK_SIZE": BQ, "K_BLOCK_SIZE": BK}, num_stages=s, num_warps=w)
+    for BQ in [32, 64, 128, 256]
+    for BK in [32, 64]
+    for s in [3, 4, 7]
+    for w in [4, 8]
+]
+
+
+def keep(conf):
+    BLOCK_Q = conf.kwargs["Q_BLOCK_SIZE"]
+    BLOCK_K = conf.kwargs["K_BLOCK_SIZE"]
+    if BLOCK_Q * BLOCK_K < 128 * 128 and conf.num_warps == 8:
+        return False
+    return True
+
+
+@triton.autotune(
+    list(filter(keep, configs)),
+    key=["Q_BLOCK_SIZE", "K_BLOCK_SIZE", "N_QUERIES", "N_KEYS", "D"],
+)
 @triton.jit
 def bwdbwd_kernel_stage1(
     # Inputs
@@ -50,7 +77,7 @@ def bwdbwd_kernel_stage1(
         base=Q_ptr + batch_index * stride_Qb,
         shape=(N_QUERIES, D),
         strides=(stride_Qi, stride_Qd),
-        offset=(query_block_index * Q_BLOCK_SIZE, 0),
+        offsets=(query_block_index * Q_BLOCK_SIZE, 0),
         block_shape=(Q_BLOCK_SIZE, D),
         order=(1, 0),
     )
@@ -59,6 +86,7 @@ def bwdbwd_kernel_stage1(
         base=K_ptr + batch_index * stride_Kb,
         shape=(N_KEYS, D),
         strides=(stride_Kj, stride_Kd),
+        offsets=(0, 0),
         block_shape=(K_BLOCK_SIZE, D),
         order=(1, 0),
     )
@@ -67,6 +95,7 @@ def bwdbwd_kernel_stage1(
         base=V_ptr + batch_index * stride_Vb,
         shape=(N_KEYS, D),
         strides=(stride_Vj, stride_Vd),
+        offsets=(0, 0),
         block_shape=(K_BLOCK_SIZE, D),
         order=(1, 0),
     )
@@ -76,7 +105,7 @@ def bwdbwd_kernel_stage1(
         shape=(N_QUERIES,),
         strides=(stride_Li,),
         block_shape=(Q_BLOCK_SIZE,),
-        offset=(query_block_index * Q_BLOCK_SIZE,),
+        offsets=(query_block_index * Q_BLOCK_SIZE,),
         order=(0,),
     )
 
@@ -85,7 +114,7 @@ def bwdbwd_kernel_stage1(
         shape=(N_QUERIES,),
         strides=(stride_Di,),
         block_shape=(Q_BLOCK_SIZE,),
-        offset=(query_block_index * Q_BLOCK_SIZE,),
+        offsets=(query_block_index * Q_BLOCK_SIZE,),
         order=(0,),
     )
 
@@ -93,7 +122,7 @@ def bwdbwd_kernel_stage1(
         base=ddQ_ptr + batch_index * stride_ddQb,
         shape=(N_QUERIES, D),
         strides=(stride_ddQi, stride_ddQd),
-        offset=(query_block_index * Q_BLOCK_SIZE, 0),
+        offsets=(query_block_index * Q_BLOCK_SIZE, 0),
         block_shape=(Q_BLOCK_SIZE, D),
         order=(1, 0),
     )
@@ -102,6 +131,7 @@ def bwdbwd_kernel_stage1(
         base=ddK_ptr + batch_index * stride_ddKb,
         shape=(N_KEYS, D),
         strides=(stride_ddKj, stride_ddKd),
+        offsets=(0, 0),
         block_shape=(K_BLOCK_SIZE, D),
         order=(1, 0),
     )
@@ -110,6 +140,7 @@ def bwdbwd_kernel_stage1(
         base=ddV_ptr + batch_index * stride_ddVb,
         shape=(N_KEYS, D),
         strides=(stride_ddVj, stride_ddVd),
+        offsets=(0, 0),
         block_shape=(K_BLOCK_SIZE, D),
         order=(1, 0),
     )
@@ -119,7 +150,7 @@ def bwdbwd_kernel_stage1(
         shape=(N_QUERIES, D),
         strides=(stride_dOi, stride_dOd),
         block_shape=(Q_BLOCK_SIZE, D),
-        offset=(query_block_index * Q_BLOCK_SIZE, 0),
+        offsets=(query_block_index * Q_BLOCK_SIZE, 0),
         order=(1, 0),
     )
 
@@ -128,7 +159,7 @@ def bwdbwd_kernel_stage1(
         shape=(N_QUERIES,),
         strides=(stride_dDi,),
         block_shape=(Q_BLOCK_SIZE,),
-        offset=(query_block_index * Q_BLOCK_SIZE,),
+        offsets=(query_block_index * Q_BLOCK_SIZE,),
         order=(0,),
     )
     B_block_ptr = tl.make_block_ptr(
@@ -136,7 +167,7 @@ def bwdbwd_kernel_stage1(
         shape=(N_QUERIES,),
         strides=(stride_Bi,),
         block_shape=(Q_BLOCK_SIZE,),
-        offset=(query_block_index * Q_BLOCK_SIZE,),
+        offsets=(query_block_index * Q_BLOCK_SIZE,),
         order=(0,),
     )
 
@@ -159,7 +190,7 @@ def bwdbwd_kernel_stage1(
         S_ij = tl.dot(Q_i, K_j.T) * scale
         P_ij = tl.exp(S_ij - L_i[:, None])
 
-        dP_ij = tl.dot(dO_i, V_j)
+        dP_ij = tl.dot(dO_i, V_j.T)
 
         ddS_ij = (tl.dot(ddQ_i, K_j.T) + tl.dot(Q_i, ddK_j.T)) * scale
 
@@ -171,7 +202,9 @@ def bwdbwd_kernel_stage1(
         ddK_block_ptr = ddK_block_ptr.advance((K_BLOCK_SIZE, 0))
         ddV_block_ptr = ddV_block_ptr.advance((K_BLOCK_SIZE, 0))
 
-    tl.store(dD_block_ptr, dD_i_acc)  # Finished computing dD_i
+    tl.store(
+        dD_block_ptr, dD_i_acc.to(dD_block_ptr.type.element_ty)
+    )  # Finished computing dD_i
     K_block_ptr = K_block_ptr.advance((-T_k * K_BLOCK_SIZE, 0))
     V_block_ptr = V_block_ptr.advance((-T_k * K_BLOCK_SIZE, 0))
     ddK_block_ptr = ddK_block_ptr.advance((-T_k * K_BLOCK_SIZE, 0))
@@ -192,7 +225,7 @@ def bwdbwd_kernel_stage1(
         S_ij = tl.dot(Q_i, K_j.T) * scale
         P_ij = tl.exp(S_ij - L_i[:, None])
 
-        dP_ij = tl.dot(dO_i, V_j)
+        dP_ij = tl.dot(dO_i, V_j.T)
 
         ddS_ij = (tl.dot(ddQ_i, K_j.T) + tl.dot(Q_i, ddK_j.T)) * scale
 
@@ -211,7 +244,7 @@ def bwdbwd_kernel_stage1(
         ddK_block_ptr = ddK_block_ptr.advance((K_BLOCK_SIZE, 0))
         ddV_block_ptr = ddV_block_ptr.advance((K_BLOCK_SIZE, 0))
 
-    tl.store(B_block_ptr, B_i_acc)
+    tl.store(B_block_ptr, B_i_acc.to(B_block_ptr.type.element_ty))
     K_block_ptr = K_block_ptr.advance((-T_k * K_BLOCK_SIZE, 0))
     V_block_ptr = V_block_ptr.advance((-T_k * K_BLOCK_SIZE, 0))
     ddK_block_ptr = ddK_block_ptr.advance((-T_k * K_BLOCK_SIZE, 0))
@@ -229,7 +262,7 @@ def bwdbwd_kernel_stage1(
         S_ij = tl.dot(Q_i, K_j.T) * scale
         P_ij = tl.exp(S_ij - L_i[:, None])
 
-        dP_ij = tl.dot(dO_i, V_j)
+        dP_ij = tl.dot(dO_i, V_j.T)
 
         ddS_ij = (tl.dot(ddQ_i, K_j.T) + tl.dot(Q_i, ddK_j.T)) * scale
 
@@ -243,12 +276,12 @@ def bwdbwd_kernel_stage1(
         dS2_ij = P_ij * (dP2_ij - B_i_acc[:, None]) * scale
 
         dS_ij = scale * P_ij * (dP_ij - D_i[:, None])
-        dQ2_i_acc = tl.dot(dS_ij, ddK_j, acc=dQ2_i_acc)
-        dQ2_i_acc = tl.dot(dS2_ij, K_j, acc=dQ2_i_acc)
+        dQ2_i_acc = tl.dot(dS_ij.to(ddK_j.dtype), ddK_j, acc=dQ2_i_acc)
+        dQ2_i_acc = tl.dot(dS2_ij.to(K_j.dtype), K_j, acc=dQ2_i_acc)
 
         ddP_ij = P_ij * (ddS_ij - dD_i_acc[:, None])
-        ddO_i_acc = tl.dot(ddP_ij, V_j, acc=ddO_i_acc)
-        ddO_i_acc = tl.dot(P_ij, ddV_j, acc=ddO_i_acc)
+        ddO_i_acc = tl.dot(ddP_ij.to(V_j.dtype), V_j, acc=ddO_i_acc)
+        ddO_i_acc = tl.dot(P_ij.to(ddV_j.dtype), ddV_j, acc=ddO_i_acc)
 
         # TODO: Try tl.dot((b, 1, k), (b, k, 1)) with acc
         K_block_ptr = K_block_ptr.advance((K_BLOCK_SIZE, 0))
@@ -261,7 +294,7 @@ def bwdbwd_kernel_stage1(
         shape=(N_QUERIES, D),
         strides=(stride_dQ2i, stride_dQ2d),
         block_shape=(Q_BLOCK_SIZE, D),
-        offset=(query_block_index * Q_BLOCK_SIZE, 0),
+        offsets=(query_block_index * Q_BLOCK_SIZE, 0),
         order=(1, 0),
     )
     ddO_block_ptr = tl.make_block_ptr(
@@ -269,11 +302,11 @@ def bwdbwd_kernel_stage1(
         shape=(N_QUERIES, D),
         strides=(stride_ddOi, stride_ddOd),
         block_shape=(Q_BLOCK_SIZE, D),
-        offset=(query_block_index * Q_BLOCK_SIZE, 0),
+        offsets=(query_block_index * Q_BLOCK_SIZE, 0),
         order=(1, 0),
     )
-    tl.store(dQ2_block_ptr, dQ2_i_acc)
-    tl.store(ddO_block_ptr, ddO_i_acc)
+    tl.store(dQ2_block_ptr, dQ2_i_acc.to(dQ2_block_ptr.type.element_ty))
+    tl.store(ddO_block_ptr, ddO_i_acc.to(ddO_block_ptr.type.element_ty))
 
 
 @triton.jit
@@ -323,7 +356,7 @@ def bwdbwd_kernel_stage2(
         base=Q_ptr + batch_index * stride_Qb,
         shape=(N_QUERIES, D),
         strides=(stride_Qi, stride_Qd),
-        offset=(0, 0),
+        offsets=(0, 0),
         block_shape=(Q_BLOCK_SIZE, D),
         order=(1, 0),
     )
@@ -443,7 +476,7 @@ def bwdbwd_kernel_stage2(
         S_ij = tl.dot(Q_i, K_j.T) * scale
         P_ij = tl.exp(S_ij - L_i[:, None])
 
-        dP_ij = tl.dot(dO_i, V_j)
+        dP_ij = tl.dot(dO_i, V_j.T)
 
         ddS_ij = (tl.dot(ddQ_i, K_j.T) + tl.dot(Q_i, ddK_j.T)) * scale
 
@@ -494,19 +527,80 @@ def bwdbwd_kernel_stage2(
     tl.store(dV2_block_ptr, dV2_j_acc)
 
 
+# class Bwd(torch.autograd.Function):
+#     @staticmethod
+#     def forward(
+#         ctx,
+#         Q,
+#         K,
+#         V,
+#         dO,
+#         L,
+#         scale,
+#     ):
+#         batch_size, n_queries, d = Q.shape
+#         n_keys = K.shape[1]
+
+#         T_q = cdiv(n_queries, Q_BLOCK_SIZE)
+
+#         bwdbwd_kernel
 
 
+def use_bwdbwd(Q, K, V, O, dO, ddQ, ddK, ddV, L, scale):
+    batch_size, N_QUERIES, HIDDEN_DIM = Q.shape
+    N_KEYS = K.shape[1]
+
+    D = torch.sum(dO * O, dim=-1)
+    dQ2 = torch.zeros_like(Q)
+    ddO = torch.zeros_like(O)
+    dD = torch.zeros_like(D)
+    B = torch.zeros_like(D)
+
+    bwdbwd_kernel_stage1[
+        lambda args: (triton.cdiv(N_QUERIES, args["Q_BLOCK_SIZE"]), batch_size)
+    ](
+        # Inputs
+        Q, K, V, D, dO, ddQ, ddK, ddV, L,
+        # Outputs
+        dQ2, ddO, dD, B,
+        # Input strides
+        Q.stride(0), Q.stride(1), Q.stride(2),
+        K.stride(0), K.stride(1), K.stride(2),
+        V.stride(0), V.stride(1), V.stride(2),
+        D.stride(0), D.stride(1),
+        dO.stride(0), dO.stride(1), dO.stride(2),
+        ddQ.stride(0), ddQ.stride(1), ddQ.stride(2),
+        ddK.stride(0), ddK.stride(1), ddK.stride(2),
+        ddV.stride(0), ddV.stride(1), ddV.stride(2),
+        L.stride(0), L.stride(1),
+        # Output Strides
+        dQ2.stride(0), dQ2.stride(1), dQ2.stride(2),
+        ddO.stride(0), ddO.stride(1), ddO.stride(2),
+        dD.stride(0), dD.stride(1),
+        B.stride(0), B.stride(1),
+        # Sizes
+        N_QUERIES, N_KEYS,
+        scale=scale,
+        D=HIDDEN_DIM,
+    )  # fmt: off
+
+    print(dQ2)
+    print(ddO)
 
 
-class Bwd(torch.autograd.Function):
-    @staticmethod
-    def forward(
-        ctx,
-        Q, K, V, dO, L, scale,
-    ):
-        batch_size, n_queries, d = Q.shape
-        n_keys = K.shape[1]
-
-        T_q = 
-
-        
+def test_bwdbwd():
+    batch_size = 6
+    N_QUERIES = 128
+    N_KEYS = 256
+    D = 64
+    Q = torch.randn(batch_size, N_QUERIES, D, device="cuda", dtype=torch.bfloat16)
+    K = torch.randn(batch_size, N_KEYS, D, device="cuda", dtype=torch.bfloat16)
+    V = torch.randn(batch_size, N_KEYS, D, device="cuda", dtype=torch.bfloat16)
+    O = torch.randn(batch_size, N_QUERIES, D, device="cuda", dtype=torch.bfloat16)
+    dO = torch.randn(batch_size, N_QUERIES, D, device="cuda", dtype=torch.bfloat16)
+    ddQ = torch.randn(batch_size, N_QUERIES, D, device="cuda", dtype=torch.bfloat16)
+    ddK = torch.randn(batch_size, N_KEYS, D, device="cuda", dtype=torch.bfloat16)
+    ddV = torch.randn(batch_size, N_KEYS, D, device="cuda", dtype=torch.bfloat16)
+    L = produce_L(Q, K, is_causal=False)
+    scale = 1.0 / D**0.5
+    use_bwdbwd(Q, K, V, O, dO, ddQ, ddK, ddV, L, scale)
