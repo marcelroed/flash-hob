@@ -505,6 +505,34 @@ def scuffed_save_bwd_bwd(forward_fn, backward_fn, inp, **settings):
     )
 
 
+def bwdbwd_from_vjp(
+    stats,
+    q,
+    k,
+    v,
+    o,
+    do,
+    ddq,
+    ddk,
+    ddv,
+    scale,
+    is_causal,
+):
+    assert not is_causal
+    out, bwd_vjp = jax.vjp(
+        jax.remat(
+            partial(attn_bwd, scale=scale),
+            policy=jax.checkpoint_policies.save_only_these_names("q", "k", "v", "do"),
+        ),
+        q,
+        k,
+        v,
+        do,
+    )
+    dq2, dk2, dv2, ddo = bwd_vjp((ddq, ddk, ddv))
+    return dq2, dk2, dv2, ddo
+
+
 def compare_bwdbwd_and_bwdbwdstats(
     forward_fn, backward_fn_non_stats, backward_fn_stats, inp, **settings
 ):
@@ -571,7 +599,7 @@ def compare_bwdbwd_and_bwdbwdstats(
         scale=scale,
         is_causal=False,
     )
-    dq2_stats, dk2_stats, dv2_stats, ddo_stats = backward_fn_stats(
+    dq2_stats, dk2_stats, dv2_stats, ddo_stats = bwdbwd_from_vjp(
         stats=L,
         q=q,
         k=k,
