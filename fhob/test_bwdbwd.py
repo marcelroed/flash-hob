@@ -3,6 +3,9 @@ from pathlib import Path
 import jax.numpy as jnp
 import torch
 
+from fhob.triton_bwdbwd import use_bwdbwd
+from fhob.triton_flash import produce_L, run_regular_attention
+
 
 def main():
     test_data_folder = Path("test_data")
@@ -21,13 +24,14 @@ def main():
     # torch.save(torch.tensor(ddk), input_tensors_path / "ddk.pt")
     # torch.save(torch.tensor(ddv), input_tensors_path / "ddv.pt")
 
-    q = torch.load(input_tensors_path / "q.pt")
-    k = torch.load(input_tensors_path / "k.pt")
-    v = torch.load(input_tensors_path / "v.pt")
-    do = torch.load(input_tensors_path / "do.pt")
-    ddq = torch.load(input_tensors_path / "ddq.pt")
-    ddk = torch.load(input_tensors_path / "ddk.pt")
-    ddv = torch.load(input_tensors_path / "ddv.pt")
+    q = torch.load(input_tensors_path / "q.pt").to(torch.bfloat16)
+    k = torch.load(input_tensors_path / "k.pt").to(torch.bfloat16)
+    v = torch.load(input_tensors_path / "v.pt").to(torch.bfloat16)
+    o = torch.load(input_tensors_path / "o.pt").to(torch.bfloat16)
+    do = torch.load(input_tensors_path / "do.pt").to(torch.bfloat16)
+    ddq = torch.load(input_tensors_path / "ddq.pt").to(torch.bfloat16)
+    ddk = torch.load(input_tensors_path / "ddk.pt").to(torch.bfloat16)
+    ddv = torch.load(input_tensors_path / "ddv.pt").to(torch.bfloat16)
 
     nq, d_in = q.shape
     nkv, _ = k.shape
@@ -40,22 +44,38 @@ def main():
     assert d_in == 256
     assert d_out == 512
 
-    expected_dq2 = torch.load(output_tensors_path / "dq2.pt")
-    expected_dk2 = torch.load(output_tensors_path / "dk2.pt")
-    expected_dv2 = torch.load(output_tensors_path / "dv2.pt")
-    expected_ddo = torch.load(output_tensors_path / "ddo.pt")
+    expected_dq2 = torch.load(output_tensors_path / "dq2.pt").to(torch.bfloat16)
+    expected_dk2 = torch.load(output_tensors_path / "dk2.pt").to(torch.bfloat16)
+    expected_dv2 = torch.load(output_tensors_path / "dv2.pt").to(torch.bfloat16)
+    expected_ddo = torch.load(output_tensors_path / "ddo.pt").to(torch.bfloat16)
+
+    q, k, v, do, ddq, ddk, ddv = (
+        q.unsqueeze(0),
+        k.unsqueeze(0),
+        v.unsqueeze(0),
+        do.unsqueeze(0),
+        ddq.unsqueeze(0),
+        ddk.unsqueeze(0),
+        ddv.unsqueeze(0),
+    )
+    expected_dq2, expected_ddo = expected_dq2.unsqueeze(0), expected_ddo.unsqueeze(0)
+
+    o = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=False)
+    L = produce_L(q, k, is_causal=False)
+    triton_dq2, triton_ddo = use_bwdbwd(q, k, v, do, o, ddq, ddk, ddv, L, scale)
+    torch.testing.assert_close(triton_dq2, expected_dq2)
+    torch.testing.assert_close(triton_ddo, expected_ddo)
 
     # TODO: change this to use the jax implementation!
     # from fhob.jax_refs.jax_impls import attn_bwd_bwd
-    from fhob.jax_refs.jax_impl import attn_bwd_bwd as non_flash_attn_bwd_bwd
+    # from fhob.jax_refs.jax_impl import attn_bwd_bwd as non_flash_attn_bwd_bwd
 
     # fhob.jax_refs.jax_impls
-    jnp.asarray(q)
-    return
+    # return
 
-    dq2, dk2, dv2, ddo = non_flash_attn_bwd_bwd(
-        jnp.asarray(q), k, v, do, ddq, ddk, ddv, scale=scale, is_causal=False
-    )
+    # dq2, dk2, dv2, ddo = non_flash_attn_bwd_bwd(
+    #     jnp.asarray(q), k, v, do, ddq, ddk, ddv, scale=scale, is_causal=False
+    # )
 
     # nq = 100
     # nkv = 150
