@@ -194,7 +194,7 @@ def bwdbwd_kernel_stage1(
         S_ij = tl.dot(Q_i, K_j.T) * scale
         P_ij = tl.exp(S_ij - L_i[:, None])
 
-        dP_ij = tl.dot(dO_i, V_j.T)
+        # dP_ij = tl.dot(dO_i, V_j.T)
 
         ddS_ij = (tl.dot(ddQ_i, K_j.T) + tl.dot(Q_i, ddK_j.T)) * scale
 
@@ -511,7 +511,6 @@ def bwdbwd_kernel_stage2(
         L_block_ptr = L_block_ptr.advance((Q_BLOCK_SIZE,))
         dO_block_ptr = dO_block_ptr.advance((Q_BLOCK_SIZE, 0))
         ddQ_block_ptr = ddQ_block_ptr.advance((Q_BLOCK_SIZE, 0))
-        dD_block_ptr = dD_block_ptr.advance((Q_BLOCK_SIZE,))
         B_block_ptr = B_block_ptr.advance((Q_BLOCK_SIZE,))
         D_block_ptr = D_block_ptr.advance((Q_BLOCK_SIZE,))
         dD_block_ptr = dD_block_ptr.advance((Q_BLOCK_SIZE,))
@@ -598,7 +597,7 @@ def use_bwdbwd(Q, K, V, O, dO, ddQ, ddK, ddV, L, scale):
 
     dK2 = torch.zeros_like(K)
     dV2 = torch.zeros_like(V)
-    
+
     bwdbwd_kernel_stage2[
         lambda args: (triton.cdiv(N_KEYS, args["K_BLOCK_SIZE"]), batch_size)
     ](
@@ -646,6 +645,7 @@ def test_bwdbwd():
     L = produce_L(Q, K, is_causal=False)
     scale = 1.0 / D**0.5
     use_bwdbwd(Q, K, V, O, dO, ddQ, ddK, ddV, L, scale)
+
 
 if __name__ == "__main__":
     test_bwdbwd()
