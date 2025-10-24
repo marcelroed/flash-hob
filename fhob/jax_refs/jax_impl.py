@@ -458,7 +458,7 @@ def scuffed_save_bwd_bwd(forward_fn, backward_fn, inp, **settings):
 
 
 if __name__ == "__main__":
-    print(get_mask_bottom_right(10, 20, 5).astype(jnp.int32))
+    # print(get_mask_bottom_right(10, 20, 5).astype(jnp.int32))
 
     test_data_folder = Path("test_data")
     (input_tensors_path := test_data_folder / "input_items").mkdir(
