@@ -1,12 +1,18 @@
 import math
 from functools import partial
+from pathlib import Path
 
+import jax.numpy as jnp
 import torch
 from einops import einsum
 
+# from fhob.triton_bwdbwd import use_bwdbwd
+# from fhob.triton_flash import produce_L, run_regular_attention
+
 
 # @partial(torch.vmap, in_dims=(0, 0, 0, 0, 0, 0, 0, 0, 0, None, None))
-def attn_bwd_bwd(
+def attn_bwd_bwd_torch(
+    *,
     stats,
     q,
     k,
@@ -116,60 +122,129 @@ def attn_bwd_torch(
 #     return dQ, dK, dV, None
 
 
-def attn_bwd_bwd_torch(
-    Q,
-    K,
-    V,
-    dO,
-    L,
-    scale,
-    ddQ,
-    ddK,
-    ddV,
-    O,
-):
-    breakpoint()
-    (dQ, dK, dV), vjp_fun = torch.func.vjp(
-        partial(attn_bwd_torch, O, L, scale), Q, K, V, dO
+# def attn_bwd_bwd_torch(
+#     Q,
+#     K,
+#     V,
+#     dO,
+#     L,
+#     scale,
+#     ddQ,
+#     ddK,
+#     ddV,
+#     O,
+# ):
+#     breakpoint()
+#     (dQ, dK, dV), vjp_fun = torch.func.vjp(
+#         partial(attn_bwd_torch, O, L, scale), Q, K, V, dO
+#     )
+#     dQ2, dK2, dV2, ddO = vjp_fun((ddQ, ddK, ddV))
+#     return dQ2, dK2, dV2, ddO
+
+
+def main():
+    test_data_folder = Path("test_data")
+    (input_tensors_path := test_data_folder / "input_items").mkdir(
+        parents=True, exist_ok=True
     )
-    dQ2, dK2, dV2, ddO = vjp_fun((ddQ, ddK, ddV))
-    return dQ2, dK2, dV2, ddO
-
-
-def test_attn_bwd_bwd_torch():
-    batch_size = 3
-    n_queries = 4
-    n_keys = 8
-    d = 16
-    scale = 1.0 / math.sqrt(d)
-    q = torch.randn(batch_size, n_queries, d, device="cuda", dtype=torch.float32)
-    k = torch.randn(batch_size, n_keys, d, device="cuda", dtype=torch.float32)
-    v = torch.randn(batch_size, n_keys, d, device="cuda", dtype=torch.float32)
-    o = torch.randn(batch_size, n_queries, d, device="cuda", dtype=torch.float32)
-    dO = torch.randn(batch_size, n_queries, d, device="cuda", dtype=torch.float32)
-    L = torch.randn(batch_size, n_queries, device="cuda", dtype=torch.float32)
-    ddQ = torch.randn(batch_size, n_queries, d, device="cuda", dtype=torch.float32)
-    ddK = torch.randn(batch_size, n_keys, d, device="cuda", dtype=torch.float32)
-    ddV = torch.randn(batch_size, n_keys, d, device="cuda", dtype=torch.float32)
-    results_torch = attn_bwd_bwd(
-        L,
-        q,
-        k,
-        v,
-        o,
-        dO,
-        ddQ,
-        ddK,
-        ddV,
-        scale,
-        False,
+    (output_tensors_path := test_data_folder / "output_items").mkdir(
+        parents=True, exist_ok=True
     )
 
-    results_torch_vjp = attn_bwd_bwd_torch(q, k, v, dO, L, scale, ddQ, ddK, ddV, o)
+    # torch.save(torch.tensor(q), input_tensors_path / "q.pt")
+    # torch.save(torch.tensor(k), input_tensors_path / "k.pt")
+    # torch.save(torch.tensor(v), input_tensors_path / "v.pt")
+    # torch.save(torch.tensor(do), input_tensors_path / "do.pt")
+    # torch.save(torch.tensor(ddq), input_tensors_path / "ddq.pt")
+    # torch.save(torch.tensor(ddk), input_tensors_path / "ddk.pt")
+    # torch.save(torch.tensor(ddv), input_tensors_path / "ddv.pt")
 
-    for t1, t2 in zip(results_torch, results_torch_vjp):
-        print(torch.max(t1), torch.max(t2))
-        torch.testing.assert_close(t1, t2)
+    q = torch.load(input_tensors_path / "q.pt").to(torch.bfloat16).cuda()
+    k = torch.load(input_tensors_path / "k.pt").to(torch.bfloat16).cuda()
+    v = torch.load(input_tensors_path / "v.pt").to(torch.bfloat16).cuda()
+    o = torch.load(input_tensors_path / "o.pt").to(torch.bfloat16).cuda()
+    l = torch.load(input_tensors_path / "L.pt").to(torch.bfloat16).cuda()
+    do = torch.load(input_tensors_path / "do.pt").to(torch.bfloat16).cuda()
+    ddq = torch.load(input_tensors_path / "ddq.pt").to(torch.bfloat16).cuda()
+    ddk = torch.load(input_tensors_path / "ddk.pt").to(torch.bfloat16).cuda()
+    ddv = torch.load(input_tensors_path / "ddv.pt").to(torch.bfloat16).cuda()
 
-    print(results_torch)
-    print(results_torch_vjp)
+    nq, d_in = q.shape
+    nkv, _ = k.shape
+    _, d_out = v.shape
+
+    # scale = jnp.array(1.0 / jnp.sqrt(d_in), dtype=jnp.float32)
+
+    assert nq == 128
+    assert nkv == 256
+    assert d_in == 64
+    assert d_out == 64
+
+    expected_dq2 = torch.load(output_tensors_path / "dq2.pt").to(torch.bfloat16).cuda()
+    expected_dk2 = torch.load(output_tensors_path / "dk2.pt").to(torch.bfloat16).cuda()
+    expected_dv2 = torch.load(output_tensors_path / "dv2.pt").to(torch.bfloat16).cuda()
+    expected_ddo = torch.load(output_tensors_path / "ddo.pt").to(torch.bfloat16).cuda()
+
+    q, k, v, do, ddq, ddk, ddv = (
+        q,  # .unsqueeze(0),
+        k,  ##.unsqueeze(0),
+        v,  ##.unsqueeze(0),
+        do,  ##.unsqueeze(0),
+        ddq,  ##.unsqueeze(0),
+        ddk,  ##.unsqueeze(0),
+        ddv,  ##.unsqueeze(0),
+    )
+    expected_dq2, expected_ddo = expected_dq2, expected_ddo
+
+    o = torch.nn.functional.scaled_dot_product_attention(
+        q, k, v, scale=1 / d_in**0.5, is_causal=False
+    )
+    # L = produce_L(q, k, is_causal=False)
+    L = torch.load(input_tensors_path / "L.pt").to(torch.bfloat16).cuda()
+
+    torch_dq2, torch_dk2, torch_dv2, torch_ddo = attn_bwd_bwd_torch(
+        stats=L,
+        q=q,
+        k=k,
+        v=v,
+        o=o,
+        do=do,
+        ddq=ddq,
+        ddk=ddk,
+        ddv=ddv,
+        scale=torch.tensor(1 / d_in**0.5).to(torch.bfloat16),
+        is_causal=False,
+        # sliding_window_length=float("inf"), #TODO: add sliding window length
+    )
+    # triton_dq2, triton_dk2, triton_dv2, triton_ddo = use_bwdbwd(
+    #     q, k, v, do, o, ddq, ddk, ddv, L, 1 / d_in**0.5
+    # )
+
+    print(torch_dq2)
+    print(expected_dq2)
+    torch.testing.assert_close(torch_dq2, expected_dq2)
+    torch.testing.assert_close(torch_ddo, expected_ddo)
+
+    # TODO: change this to use the jax implementation!
+    # from fhob.jax_refs.jax_impls import attn_bwd_bwd
+    # from fhob.jax_refs.jax_impl import attn_bwd_bwd as non_flash_attn_bwd_bwd
+
+    # fhob.jax_refs.jax_impls
+    # return
+
+    # dq2, dk2, dv2, ddo = non_flash_attn_bwd_bwd(
+    #     jnp.asarray(q), k, v, do, ddq, ddk, ddv, scale=scale, is_causal=False
+    # )
+
+    # nq = 100
+    # nkv = 150
+    # d_in = 256
+    # d_out = 512
+    # dtype = jnp.bfloat16
+    # scale = jnp.array(1.0 / jnp.sqrt(d_in), dtype=jnp.float32)
+
+    # print(q)
+
+
+if __name__ == "__main__":
+    main()
