@@ -7,12 +7,12 @@ requires-python = ">=3.12"
 dependencies = [
     "einops>=0.8.1",
     "equinox>=0.13.2",
-    "jax[cuda13]>=0.8.0",
+    "jax[cuda12]>=0.8.0",
     "nvidia-cutlass-dsl>=4.2.1",
-    "pytest>=8.4.2",
     "ruff>=0.14.2",
     "torch>=2.9.0",
     "ty>=0.0.1a24",
+    "pytest>=8.4.2",
 ]
 
 [build-system]
@@ -47,8 +47,8 @@ flash-attn = [
 flash-attn = { CUDA_HOME = "/usr/local/cuda", FLASH_ATTENTION_TRITON_AMD_ENABLE = "TRUE", MAX_JOBS = "10", FLASH_ATTN_CUDA_ARCHS = "120" }
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu130" }
+torch = { index = "pytorch-cu128" }
 
 [[tool.uv.index]]
-name = "pytorch-cu130"
-url = "https://download.pytorch.org/whl/cu130"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"

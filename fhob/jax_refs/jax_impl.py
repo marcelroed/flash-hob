@@ -1,4 +1,5 @@
 from functools import partial
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -391,15 +392,81 @@ def check_backward_matched(forward_fn, backward_fn, inp, **settings):
     forward_out, auto_vjp = jax.vjp(partial(forward_fn, **settings), *random_input)
     random_dout = random_like_tree(forward_out, jrandom.PRNGKey(1))
 
+    print(f"{len(random_dout)=}")
+
+    q, k, v, do = inp
+    ddq, ddk, ddv = random_dout
+
+    import torch
+
+    print(torch.tensor(q))
+    #     q,
+    #     k,
+    #     v,
+    #     do,
+    #     ddq,
+    #     ddk,
+    #     ddv,
+    print(f"{len(inp)=}")
+
+    (input_items / "q.npy")
+
     auto_din = auto_vjp(random_dout)
     if not isinstance(random_dout, tuple):
         random_dout = (random_dout,)
     bwd_din = backward_fn(*random_input, *random_dout, **settings)
-    pp(diff_metrics(auto_din, bwd_din))
+    # pp(diff_metrics(auto_din, bwd_din))
+
+
+def scuffed_save_bwd_bwd(forward_fn, backward_fn, inp, **settings):
+    random_input = random_like_tree(inp, jrandom.PRNGKey(0))
+
+    forward_out, auto_vjp = jax.vjp(partial(forward_fn, **settings), *random_input)
+    random_dout = random_like_tree(forward_out, jrandom.PRNGKey(1))
+
+    q, k, v, do = inp
+    ddq, ddk, ddv = random_dout
+
+    import torch
+
+    torch.save(torch.tensor(q), input_tensors_path / "q.pt")
+    torch.save(torch.tensor(k), input_tensors_path / "k.pt")
+    torch.save(torch.tensor(v), input_tensors_path / "v.pt")
+    torch.save(torch.tensor(do), input_tensors_path / "do.pt")
+    torch.save(torch.tensor(ddq), input_tensors_path / "ddq.pt")
+    torch.save(torch.tensor(ddk), input_tensors_path / "ddk.pt")
+    torch.save(torch.tensor(ddv), input_tensors_path / "ddv.pt")
+    #     q,
+    #     k,
+    #     v,
+    #     do,
+    #     ddq,
+    #     ddk,
+    #     ddv,
+
+    auto_din = auto_vjp(random_dout)
+    if not isinstance(random_dout, tuple):
+        random_dout = (random_dout,)
+    bwd_din = backward_fn(*random_input, *random_dout, **settings)
+    print(f"{len(bwd_din)=}")
+    # pp(diff_metrics(auto_din, bwd_din))
+    dq2, dk2, dv2, ddo = bwd_din
+    torch.save(torch.tensor(dq2), output_tensors_path / "dq2.pt")
+    torch.save(torch.tensor(dk2), output_tensors_path / "dk2.pt")
+    torch.save(torch.tensor(dv2), output_tensors_path / "dv2.pt")
+    torch.save(torch.tensor(ddo), output_tensors_path / "ddo.pt")
 
 
 if __name__ == "__main__":
     print(get_mask_bottom_right(10, 20, 5).astype(jnp.int32))
+
+    test_data_folder = Path("test_data")
+    (input_tensors_path := test_data_folder / "input_items").mkdir(
+        parents=True, exist_ok=True
+    )
+    (output_tensors_path := test_data_folder / "output_items").mkdir(
+        parents=True, exist_ok=True
+    )
 
     key1, key2, key3 = jrandom.split(jrandom.PRNGKey(42), 3)
     nq = 100
@@ -440,14 +507,28 @@ if __name__ == "__main__":
         do,
     )
 
-    print(out)
+    # print(out)
     # jaxpr_graph(bwd_vjp, (q, k, v)).render(filename='auto_bwd_bwd')
 
     # check_backward_matched(attn_fwd, attn_bwd, (q, k, v), scale=scale, is_causal=True)
-    check_backward_matched(
+    # check_backward_matched(
+    #     attn_bwd, attn_bwd_bwd, (q, k, v, do), scale=scale, is_causal=False
+    # )
+    # jaxpr_graph(attn_bwd_bwd, q, k, v, do, q, k, v).render(filename='custom_bwd_bwd')
+
+    scuffed_save_bwd_bwd(
         attn_bwd, attn_bwd_bwd, (q, k, v, do), scale=scale, is_causal=False
     )
-    # jaxpr_graph(attn_bwd_bwd, q, k, v, do, q, k, v).render(filename='custom_bwd_bwd')
+
+    # attn_bwd_bwd(
+    #     q,
+    #     k,
+    #     v,
+    #     do,
+    #     ddq,
+    #     ddk,
+    #     ddv,
+    # )
 
     # def _softmax_jvp(axis, primals, tangents):
     #   (x, where, initial), (x_dot, _, _) = primals, tangents
