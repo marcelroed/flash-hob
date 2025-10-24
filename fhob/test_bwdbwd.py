@@ -21,13 +21,14 @@ def main():
     # torch.save(torch.tensor(ddk), input_tensors_path / "ddk.pt")
     # torch.save(torch.tensor(ddv), input_tensors_path / "ddv.pt")
 
-    q = torch.load(input_tensors_path / "q.pt")
-    k = torch.load(input_tensors_path / "k.pt")
-    v = torch.load(input_tensors_path / "v.pt")
-    do = torch.load(input_tensors_path / "do.pt")
-    ddq = torch.load(input_tensors_path / "ddq.pt")
-    ddk = torch.load(input_tensors_path / "ddk.pt")
-    ddv = torch.load(input_tensors_path / "ddv.pt")
+    q = torch.load(input_tensors_path / "q.pt").to(torch.bfloat16)
+    k = torch.load(input_tensors_path / "k.pt").to(torch.bfloat16)
+    v = torch.load(input_tensors_path / "v.pt").to(torch.bfloat16)
+    o = torch.load(input_tensors_path / "o.pt").to(torch.bfloat16)
+    do = torch.load(input_tensors_path / "do.pt").to(torch.bfloat16)
+    ddq = torch.load(input_tensors_path / "ddq.pt").to(torch.bfloat16)
+    ddk = torch.load(input_tensors_path / "ddk.pt").to(torch.bfloat16)
+    ddv = torch.load(input_tensors_path / "ddv.pt").to(torch.bfloat16)
 
     nq, d_in = q.shape
     nkv, _ = k.shape
@@ -40,10 +41,10 @@ def main():
     assert d_in == 256
     assert d_out == 512
 
-    expected_dq2 = torch.load(output_tensors_path / "dq2.pt")
-    expected_dk2 = torch.load(output_tensors_path / "dk2.pt")
-    expected_dv2 = torch.load(output_tensors_path / "dv2.pt")
-    expected_ddo = torch.load(output_tensors_path / "ddo.pt")
+    expected_dq2 = torch.load(output_tensors_path / "dq2.pt").to(torch.bfloat16)
+    expected_dk2 = torch.load(output_tensors_path / "dk2.pt").to(torch.bfloat16)
+    expected_dv2 = torch.load(output_tensors_path / "dv2.pt").to(torch.bfloat16)
+    expected_ddo = torch.load(output_tensors_path / "ddo.pt").to(torch.bfloat16)
 
     # TODO: change this to use the jax implementation!
     # from fhob.jax_refs.jax_impls import attn_bwd_bwd
