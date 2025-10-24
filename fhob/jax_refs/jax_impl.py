@@ -608,7 +608,7 @@ if __name__ == "__main__":
     nq = 100
     nkv = 150
     d_in = 256
-    d_out = 512
+    d_out = 256
     dtype = jnp.bfloat16
     scale = jnp.array(1.0 / jnp.sqrt(d_in), dtype=jnp.float32)
     q = jrandom.normal(key1, (nq, d_in), dtype=dtype)
@@ -652,23 +652,23 @@ if __name__ == "__main__":
     # )
     # jaxpr_graph(attn_bwd_bwd, q, k, v, do, q, k, v).render(filename='custom_bwd_bwd')
 
-    # scuffed_save_bwd_bwd(
-    #     # attn_bwd, attn_bwd_bwd, (q, k, v, do), scale=scale, is_causal=False
-    #     attn_bwd,
-    #     attn_bwd_bwd_stats,
-    #     (q, k, v, do),
-    #     scale=scale,
-    #     is_causal=False,
-    # )
-    compare_bwdbwd_and_bwdbwdstats(
+    scuffed_save_bwd_bwd(
         # attn_bwd, attn_bwd_bwd, (q, k, v, do), scale=scale, is_causal=False
         attn_bwd,
-        attn_bwd_bwd,
         attn_bwd_bwd_stats,
         (q, k, v, do),
         scale=scale,
         is_causal=False,
     )
+    # compare_bwdbwd_and_bwdbwdstats(
+    #     # attn_bwd, attn_bwd_bwd, (q, k, v, do), scale=scale, is_causal=False
+    #     attn_bwd,
+    #     attn_bwd_bwd,
+    #     attn_bwd_bwd_stats,
+    #     (q, k, v, do),
+    #     scale=scale,
+    #     is_causal=False,
+    # )
 
     # attn_bwd_bwd(
     #     q,

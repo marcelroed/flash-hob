@@ -43,7 +43,7 @@ def main():
     assert nq == 100
     assert nkv == 150
     assert d_in == 256
-    assert d_out == 512
+    assert d_out == 256
 
     expected_dq2 = torch.load(output_tensors_path / "dq2.pt").to(torch.bfloat16).cuda()
     expected_dk2 = torch.load(output_tensors_path / "dk2.pt").to(torch.bfloat16).cuda()
