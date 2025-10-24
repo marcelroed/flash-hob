@@ -505,6 +505,94 @@ def scuffed_save_bwd_bwd(forward_fn, backward_fn, inp, **settings):
     )
 
 
+def compare_bwdbwd_and_bwdbwdstats(
+    forward_fn, backward_fn_non_stats, backward_fn_stats, inp, **settings
+):
+    random_input = random_like_tree(inp, jrandom.PRNGKey(0))
+
+    forward_out, auto_vjp = jax.vjp(partial(forward_fn, **settings), *random_input)
+    random_dout = random_like_tree(forward_out, jrandom.PRNGKey(1))
+
+    q, k, v, do = inp
+    ddq, ddk, ddv = random_dout
+
+    import torch
+
+    S = (q @ k.T) * scale
+    P = softmax(S)
+    _O = P @ v
+    L = jax.nn.logsumexp(S, axis=-1)
+
+    # torch.save(
+    #     torch.from_numpy(np.asarray(q, dtype=np.float32)), input_tensors_path / "q.pt"
+    # )
+    # torch.save(
+    #     torch.from_numpy(np.asarray(k, dtype=np.float32)), input_tensors_path / "k.pt"
+    # )
+    # torch.save(
+    #     torch.from_numpy(np.asarray(v, dtype=np.float32)), input_tensors_path / "v.pt"
+    # )
+    # torch.save(
+    #     torch.from_numpy(np.asarray(_O, dtype=np.float32)), input_tensors_path / "o.pt"
+    # )
+    # torch.save(
+    #     torch.from_numpy(np.asarray(do, dtype=np.float32)), input_tensors_path / "do.pt"
+    # )
+    # torch.save(
+    #     torch.from_numpy(np.asarray(ddq, dtype=np.float32)),
+    #     input_tensors_path / "ddq.pt",
+    # )
+    # torch.save(
+    #     torch.from_numpy(np.asarray(ddk, dtype=np.float32)),
+    #     input_tensors_path / "ddk.pt",
+    # )
+    # torch.save(
+    #     torch.from_numpy(np.asarray(ddv, dtype=np.float32)),
+    #     input_tensors_path / "ddv.pt",
+    # )
+    # torch.save(
+    #     torch.from_numpy(np.asarray(L, dtype=np.float32)),
+    #     input_tensors_path / "L.pt",
+    # )
+
+    auto_din = auto_vjp(random_dout)
+    if not isinstance(random_dout, tuple):
+        random_dout = (random_dout,)
+    # bwd_din = backward_fn(*random_input, *random_dout, **settings)
+    dq2, dk2, dv2, ddo = backward_fn_non_stats(
+        q=q,
+        k=k,
+        v=v,
+        # o=_O,
+        do=do,
+        ddq=ddq,
+        ddk=ddk,
+        ddv=ddv,
+        scale=scale,
+        is_causal=False,
+    )
+    dq2_stats, dk2_stats, dv2_stats, ddo_stats = backward_fn_stats(
+        stats=L,
+        q=q,
+        k=k,
+        v=v,
+        o=_O,
+        do=do,
+        ddq=ddq,
+        ddk=ddk,
+        ddv=ddv,
+        scale=scale,
+        is_causal=False,
+    )
+    print(f"{jnp.std(dq2-dq2_stats).item()=} {jnp.max(dq2-dq2_stats).item()=}")
+    # print(jnp.std(dk2 - dk2_stats))
+    # print(jnp.std(dv2 - dv2_stats))
+    # print(jnp.std(ddo - ddo_stats))
+    print(f"{jnp.std(dk2 - dk2_stats).item()=} {jnp.max(dk2 - dk2_stats).item()=}")
+    print(f"{jnp.std(dv2 - dv2_stats).item()=} {jnp.max(dv2 - dv2_stats).item()=}")
+    print(f"{jnp.std(ddo - ddo_stats).item()=} {jnp.max(ddo - ddo_stats).item()=}")
+
+
 if __name__ == "__main__":
     # print(get_mask_bottom_right(10, 20, 5).astype(jnp.int32))
 
@@ -564,9 +652,18 @@ if __name__ == "__main__":
     # )
     # jaxpr_graph(attn_bwd_bwd, q, k, v, do, q, k, v).render(filename='custom_bwd_bwd')
 
-    scuffed_save_bwd_bwd(
+    # scuffed_save_bwd_bwd(
+    #     # attn_bwd, attn_bwd_bwd, (q, k, v, do), scale=scale, is_causal=False
+    #     attn_bwd,
+    #     attn_bwd_bwd_stats,
+    #     (q, k, v, do),
+    #     scale=scale,
+    #     is_causal=False,
+    # )
+    compare_bwdbwd_and_bwdbwdstats(
         # attn_bwd, attn_bwd_bwd, (q, k, v, do), scale=scale, is_causal=False
         attn_bwd,
+        attn_bwd_bwd,
         attn_bwd_bwd_stats,
         (q, k, v, do),
         scale=scale,
