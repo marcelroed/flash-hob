@@ -301,7 +301,7 @@ def attn_bwd_bwd_stats(
     # print(f"Running bwdbwd with stats with {is_causal=}, {sliding_window_length=}")
     # RCP_LN2 = 1.4426950408889634
     # LN2 = 0.6931471824645996
-    print(scale.dtype)
+    # print(scale.dtype)
     scale = scale.astype(q.dtype)
 
     precision = jax.lax.DotAlgorithmPreset.F32_F32_F32
