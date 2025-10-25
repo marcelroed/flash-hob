@@ -559,10 +559,10 @@ def use_bwdbwd(Q, K, V, O, dO, ddQ, ddK, ddV, L, scale):
     N_KEYS = K.shape[1]
 
     D = torch.sum(dO * O, dim=-1)
-    dQ2 = torch.zeros_like(Q)
-    ddO = torch.zeros_like(O)
-    dD = torch.zeros_like(D)
-    B = torch.zeros_like(D)
+    dQ2 = torch.empty_like(Q)
+    ddO = torch.empty_like(O)
+    dD = torch.empty_like(D)
+    B = torch.empty_like(D)
 
     bwdbwd_kernel_stage1[
         lambda args: (triton.cdiv(N_QUERIES, args["Q_BLOCK_SIZE"]), batch_size)
@@ -595,8 +595,8 @@ def use_bwdbwd(Q, K, V, O, dO, ddQ, ddK, ddV, L, scale):
     # print(dQ2)
     # print(ddO)
 
-    dK2 = torch.zeros_like(K)
-    dV2 = torch.zeros_like(V)
+    dK2 = torch.empty_like(K)
+    dV2 = torch.empty_like(V)
 
     bwdbwd_kernel_stage2[
         lambda args: (triton.cdiv(N_KEYS, args["K_BLOCK_SIZE"]), batch_size)
