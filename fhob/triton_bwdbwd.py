@@ -15,10 +15,10 @@ configs = [
     # for BK in [32, 64]
     # for s in [3, 4, 7]
     # for w in [4, 8]
-    for BQ in [16]
-    for BK in [16]
-    for s in [3]
-    for w in [4]
+    for BQ in [32, 64, 128, 256]
+    for BK in [32, 64]
+    for s in [3, 4, 7]
+    for w in [4, 8]
 ]
 
 
