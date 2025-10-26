@@ -1,7 +1,7 @@
 import numpy as np
 
-import fhob.jax_refs.jax_impl as jax_impl
-import fhob.jax_refs.torch_impl as torch_impl
+import fhog.jax_refs.jax_impl as jax_impl
+import fhog.jax_refs.torch_impl as torch_impl
 
 print("Loading libraries...")
 

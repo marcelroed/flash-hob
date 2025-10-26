@@ -2,7 +2,7 @@ import torch
 import triton
 import triton.language as tl
 
-from fhob.triton_flash import produce_L
+from fhog.triton_flash import produce_L
 
 
 def cdiv(a, b):
@@ -77,13 +77,12 @@ def bwdbwd_kernel_stage1(
     batch_index = tl.program_id(1)
 
     # Compute block pointers
-    Q_block_ptr = tl.make_block_ptr(
+    Q_block_ptr = tl.make_tensor_descriptor(
         base=Q_ptr + batch_index * stride_Qb,
         shape=(N_QUERIES, D),
         strides=(stride_Qi, stride_Qd),
         offsets=(query_block_index * Q_BLOCK_SIZE, 0),
         block_shape=(Q_BLOCK_SIZE, D),
-        order=(1, 0),
     )
 
     K_block_ptr = tl.make_block_ptr(

@@ -3,8 +3,8 @@ from pathlib import Path
 import jax.numpy as jnp
 import torch
 
-from fhob.triton_bwdbwd import use_bwdbwd
-from fhob.triton_flash import produce_L, run_regular_attention
+from fhog.triton_bwdbwd import use_bwdbwd
+from fhog.triton_flash import produce_L, run_regular_attention
 
 
 def main():
@@ -82,10 +82,10 @@ def main():
     torch.testing.assert_close(triton_dv2, expected_dv2)
 
     # TODO: change this to use the jax implementation!
-    # from fhob.jax_refs.jax_impls import attn_bwd_bwd
-    # from fhob.jax_refs.jax_impl import attn_bwd_bwd as non_flash_attn_bwd_bwd
+    # from fhog.jax_refs.jax_impls import attn_bwd_bwd
+    # from fhog.jax_refs.jax_impl import attn_bwd_bwd as non_flash_attn_bwd_bwd
 
-    # fhob.jax_refs.jax_impls
+    # fhog.jax_refs.jax_impls
     # return
 
     # dq2, dk2, dv2, ddo = non_flash_attn_bwd_bwd(
