@@ -3,7 +3,7 @@ from pathlib import Path
 import jax.numpy as jnp
 import torch
 
-from fhog.triton_bwdbwd import use_bwdbwd
+from fhog.triton_bwdbwd import flash_bwdbwd
 from fhog.triton_flash import produce_L, run_regular_attention
 
 
@@ -70,7 +70,7 @@ def main():
         q, k, v, scale=1 / d_in**0.5, is_causal=False
     )
     L = produce_L(q, k, is_causal=False)
-    triton_dq2, triton_dk2, triton_dv2, triton_ddo = use_bwdbwd(
+    triton_dq2, triton_dk2, triton_dv2, triton_ddo = flash_bwdbwd(
         q, k, v, o, do, ddq, ddk, ddv, L, 1 / d_in**0.5
     )
 

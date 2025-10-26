@@ -6,7 +6,7 @@ import torch
 import triton
 
 from fhog.jax_refs.jax_impl import attn_bwd_bwd
-from fhog.triton_bwdbwd import use_bwdbwd
+from fhog.triton_bwdbwd import flash_bwdbwd
 
 N_REPS = 5000
 N_WARMUP = 300
@@ -60,7 +60,7 @@ def full_benchmark(nq, nkv):
 
     def trition_benchmark():
         def do_run_triton():
-            triton_dq2, triton_dk2, triton_dv2, triton_ddo = use_bwdbwd(
+            triton_dq2, triton_dk2, triton_dv2, triton_ddo = flash_bwdbwd(
                 q.unsqueeze(0),
                 k.unsqueeze(0),
                 v.unsqueeze(0),

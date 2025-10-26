@@ -77,12 +77,13 @@ def bwdbwd_kernel_stage1(
     batch_index = tl.program_id(1)
 
     # Compute block pointers
-    Q_block_ptr = tl.make_tensor_descriptor(
+    Q_block_ptr = tl.make_block_ptr(
         base=Q_ptr + batch_index * stride_Qb,
         shape=(N_QUERIES, D),
         strides=(stride_Qi, stride_Qd),
         offsets=(query_block_index * Q_BLOCK_SIZE, 0),
         block_shape=(Q_BLOCK_SIZE, D),
+        order=(1, 0),
     )
 
     K_block_ptr = tl.make_block_ptr(
@@ -553,7 +554,26 @@ def bwdbwd_kernel_stage2(
 #         bwdbwd_kernel
 
 
-def use_bwdbwd(Q, K, V, O, dO, ddQ, ddK, ddV, L, scale):
+@torch.compile(fullgraph=True, dynamic=False)
+def flash_bwdbwd(Q, K, V, O, dO, ddQ, ddK, ddV, L, scale):
+    """
+    Flash Higher-Order-Gradients (Flash Hog) backward pass.
+
+    Args:
+        Q: Query tensor of shape (batch_size, N_QUERIES, HIDDEN_DIM)
+        K: Key tensor of shape (batch_size, N_KEYS, HIDDEN_DIM)
+        V: Value tensor of shape (batch_size, N_KEYS, HIDDEN_DIM)
+        O: Output tensor of shape (batch_size, N_QUERIES, HIDDEN_DIM)
+        dO: Gradient of the output tensor with respect to the input tensor of shape (batch_size, N_QUERIES, HIDDEN_DIM)
+        ddQ: Gradient of the query tensor with respect to the input tensor of shape (batch_size, N_QUERIES, HIDDEN_DIM)
+        ddK: Gradient of the key tensor with respect to the input tensor of shape (batch_size, N_KEYS, HIDDEN_DIM)
+        ddV: Gradient of the value tensor with respect to the input tensor of shape (batch_size, N_KEYS, HIDDEN_DIM)
+    Returns:
+        dQ2: Higher order gradients of Q (batch_size, N_QUERIES, HIDDEN_DIM)
+        dK2: Higher order gradients of K (batch_size, N_KEYS, HIDDEN_DIM)
+        dV2: Higher order gradients of V (batch_size, N_KEYS, HIDDEN_DIM)
+        ddO: Higher order gradients of dO (batch_size, N_QUERIES, HIDDEN_DIM)
+    """
     batch_size, N_QUERIES, HIDDEN_DIM = Q.shape
     N_KEYS = K.shape[1]
 
@@ -643,7 +663,7 @@ def test_bwdbwd():
     ddV = torch.randn(batch_size, N_KEYS, D, device="cuda", dtype=torch.bfloat16)
     L = produce_L(Q, K, is_causal=False)
     scale = 1.0 / D**0.5
-    use_bwdbwd(Q, K, V, O, dO, ddQ, ddK, ddV, L, scale)
+    flash_bwdbwd(Q, K, V, O, dO, ddQ, ddK, ddV, L, scale)
 
 
 if __name__ == "__main__":
