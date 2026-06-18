@@ -15,6 +15,10 @@ required-markers = [
     "sys_platform == 'darwin'",
 ]
 
+[options]
+exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
+exclude-newer-span = "P3D"
+
 [[package]]
 name = "absl-py"
 version = "2.4.0"

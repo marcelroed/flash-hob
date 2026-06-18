@@ -148,10 +148,20 @@ def flash_bwdbwd0(
 
         dO_i = dO_ref[:, :]
 
+        D_i = D_ref[:]
+
         def dd_loop_body(k_tile_index, carry, causal_mask=False):
-            # CHANGED (2-pass): this pass now also accumulates r1/r2/r3, the pieces of
-            # B = r1 - dD*r2 - D*dD + r3, so the separate B pass is no longer needed.
-            dD_i_acc, r1_acc, r2_acc, r3_acc = carry
+            # 2-pass fusion: accumulate dD and R in one sweep, then close B in closed form
+            # (was a separate K pass).
+            #
+            # B = sum_k dP'_ik P_ik, with dP'_ik = dPa_ik - dP_ik*dD_i - ddS_ik*D_i + dP_ik*ddS_ik.
+            # The per-row scalars dD_i, D_i factor out of the sum:
+            #   B = r1 - dD_i*r2 - D_i*dD_i + r3,  r1=sum dPa*P, r2=sum dP*P, r3=sum dP*ddS*P.
+            # Two simplifications:
+            #   - r2 = sum_k dP_ik P_ik = dO_i . (sum_k P_ik V_k) = dO_i . O_i = D_i (precomputed).
+            #   - r1 and r3 share coefficient +1, so accumulate them together as R = r1 + r3.
+            # Hence B = R - 2*D_i*dD_i.
+            dD_i_acc, R_acc = carry
             kslice = pl.ds(k_tile_index * config.tile_k, config.tile_k)
             k_indices = kslice.start + jnp.arange(kslice.size)
 
@@ -170,12 +180,10 @@ def flash_bwdbwd0(
             dPa_ij = pl.dot(dO_i, ddV_j.T)
 
             dD_i_acc += jnp.sum(ddS_ij * P_ij, axis=1)
-            r1_acc += jnp.sum(dPa_ij * P_ij, axis=1)
-            r2_acc += jnp.sum(dP_ij * P_ij, axis=1)
-            r3_acc += jnp.sum(dP_ij * ddS_ij * P_ij, axis=1)
-            return (dD_i_acc, r1_acc, r2_acc, r3_acc)
+            R_acc += jnp.sum((dPa_ij + dP_ij * ddS_ij) * P_ij, axis=1)
+            return (dD_i_acc, R_acc)
 
-        zeros = (jnp.zeros((config.tile_q,), dtype=jnp.float32),) * 4
+        zeros = (jnp.zeros((config.tile_q,), dtype=jnp.float32),) * 2
         if mask_type == MaskType.CAUSAL:
             num_unmasked_k_tiles = pl.cdiv(q_tile_index * config.tile_q - config.tile_k + 1, config.tile_k)
             num_required_k_tiles = jnp.minimum(pl.cdiv((q_tile_index + 1) * config.tile_q - 1, config.tile_k) + 1, pl.cdiv(n_keys, config.tile_k))
@@ -183,12 +191,11 @@ def flash_bwdbwd0(
             carry = jax.lax.fori_loop(num_unmasked_k_tiles, num_required_k_tiles, partial(dd_loop_body, causal_mask=True), carry)
         else:
             carry = jax.lax.fori_loop(0, pl.cdiv(n_keys, config.tile_k), dd_loop_body, zeros)
-        dD_i, r1_i, r2_i, r3_i = carry
+        dD_i, R_i = carry
         dD_ref[:] = dD_i
 
-        D_i = D_ref[:]
-        # CHANGED (2-pass): B in closed form from the fused pass (was a second K pass).
-        B_i = r1_i - dD_i * r2_i - D_i * dD_i + r3_i
+        # B in closed form from the fused pass (uses the r2 = D_i identity).
+        B_i = R_i - 2.0 * D_i * dD_i
         B_ref[:] = B_i
 
         def dQ2_ddO_loop_body(k_tile_index, carry, causal_mask=False):
@@ -210,15 +217,19 @@ def flash_bwdbwd0(
 
             ddS_ij = (pl.dot(ddQ_i, K_j.T) + pl.dot(Q_i, ddK_j.T)) * scale
 
-            dP2_ij = pl.dot(dO_i, ddV_j.T) - dP_ij * dD_i[:, None] - ddS_ij * D_i[:, None] + dP_ij * ddS_ij
-            dS2_ij = P_ij * (dP2_ij - B_i[:, None]) * scale
+            # ddS centered by its P-weighted row reduction dD_i; shared by dP2 and ddP.
+            ddS_centered_ij = ddS_ij - dD_i[:, None]
+            scaled_P_ij = scale * P_ij
 
-            dS_ij = scale * P_ij * (dP_ij - D_i[:, None])
+            dP2_ij = pl.dot(dO_i, ddV_j.T) - ddS_ij * D_i[:, None] + dP_ij * ddS_centered_ij
+            dS2_ij = scaled_P_ij * (dP2_ij - B_i[:, None])
+
+            dS_ij = scaled_P_ij * (dP_ij - D_i[:, None])
 
             dQ2_i_acc += pl.dot(dS_ij.astype(ddK_j.dtype), ddK_j)
             dQ2_i_acc += pl.dot(dS2_ij.astype(K_j.dtype), K_j)
 
-            ddP_ij = P_ij * (ddS_ij - dD_i[:, None])
+            ddP_ij = P_ij * ddS_centered_ij
             ddO_i_acc += pl.dot(ddP_ij.astype(V_j.dtype), V_j)
             ddO_i_acc += pl.dot(P_ij.astype(ddV_j.dtype), ddV_j)
             return (dQ2_i_acc, ddO_i_acc)
@@ -310,7 +321,6 @@ def flash_bwdbwd0(
                 dD_i = dD_ref[qslice, group_index]
                 B_i = B_ref[qslice, group_index]
                 D_i = D_ref[qslice, group_index]
-                dD_i = dD_ref[qslice, group_index]
 
                 S_ij = pl.dot(Q_i, K_j.T) * scale
                 S_ij = maybe_causal_mask(S_ij, q_indices, k_indices, causal_mask)
@@ -320,13 +330,17 @@ def flash_bwdbwd0(
 
                 ddS_ij = (pl.dot(ddQ_i, K_j.T) + pl.dot(Q_i, ddK_j.T)) * scale
 
-                dP2_ij = pl.dot(dO_i, ddV_j.T) - dP_ij * dD_i[:, None] - ddS_ij * D_i[:, None] + dP_ij * ddS_ij
+                # ddS centered by its P-weighted row reduction dD_i; shared by dP2 and ddP.
+                ddS_centered_ij = ddS_ij - dD_i[:, None]
+                scaled_P_ij = scale * P_ij
 
-                dS2_ij = P_ij * (dP2_ij - B_i[:, None]) * scale
+                dP2_ij = pl.dot(dO_i, ddV_j.T) - ddS_ij * D_i[:, None] + dP_ij * ddS_centered_ij
 
-                dS_ij = scale * P_ij * (dP_ij - D_i[:, None])
+                dS2_ij = scaled_P_ij * (dP2_ij - B_i[:, None])
 
-                ddP_ij = P_ij * (ddS_ij - dD_i[:, None])
+                dS_ij = scaled_P_ij * (dP_ij - D_i[:, None])
+
+                ddP_ij = P_ij * ddS_centered_ij
                 dV2_j_acc += pl.dot(ddP_ij.astype(dO_i.dtype).T, dO_i)
 
                 dK2_j_acc += pl.dot(dS_ij.astype(ddQ_i.dtype).T, ddQ_i)
