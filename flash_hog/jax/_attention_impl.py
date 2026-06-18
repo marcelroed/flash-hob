@@ -123,19 +123,19 @@ def _dot_product_attention_fwd_abstract(
     max_seg_per_batch = get_max_seg_per_batch(q_offsets)
     softmax_stat_shape = (B * max_seg_per_batch, N, T)
 
-    vma = query.vma | key.vma | value.vma
+    mat = core.ManualAxisType(varying=query.mat.varying | key.mat.varying | value.mat.varying)
 
     output_sharding = query.sharding
 
     if is_training:
         softmax_stat_sharding = jax.NamedSharding(mesh=query.sharding.mesh, spec=jax.P(*output_sharding.spec[:-1]))
         return (
-            core.ShapedArray(output_shape, query.dtype, sharding=output_sharding, vma=vma),  # output
-            core.ShapedArray(softmax_stat_shape, np.float32, sharding=softmax_stat_sharding, vma=vma),  # softmax_stat
+            core.ShapedArray(output_shape, query.dtype, sharding=output_sharding, manual_axis_type=mat),  # output
+            core.ShapedArray(softmax_stat_shape, np.float32, sharding=softmax_stat_sharding, manual_axis_type=mat),  # softmax_stat
         )
     else:
         return (
-            core.ShapedArray(output_shape, query.dtype, sharding=output_sharding, vma=vma),  # output
+            core.ShapedArray(output_shape, query.dtype, sharding=output_sharding, manual_axis_type=mat),  # output
         )
 
 
@@ -167,21 +167,21 @@ def _dot_product_attention_bwd_abstract(
     sliding_window_length,
 ):
     _, has_dbias = variadic_args
-    vma = query.vma | key.vma | value.vma
+    mat = core.ManualAxisType(varying=query.mat.varying | key.mat.varying | value.mat.varying)
 
     if has_dbias:
         # cuDNN supports bias for this case
         return (
-            core.ShapedArray(query.shape, query.dtype, sharding=query.sharding, vma=vma),  # grad query
-            core.ShapedArray(key.shape, key.dtype, sharding=key.sharding, vma=vma),  # grad key
-            core.ShapedArray(value.shape, value.dtype, sharding=value.sharding, vma=vma),  # grad value
-            core.ShapedArray(bias.shape, bias.dtype, sharding=bias.sharding, vma=vma),  # grad bias
+            core.ShapedArray(query.shape, query.dtype, sharding=query.sharding, manual_axis_type=mat),  # grad query
+            core.ShapedArray(key.shape, key.dtype, sharding=key.sharding, manual_axis_type=mat),  # grad key
+            core.ShapedArray(value.shape, value.dtype, sharding=value.sharding, manual_axis_type=mat),  # grad value
+            core.ShapedArray(bias.shape, bias.dtype, sharding=bias.sharding, manual_axis_type=mat),  # grad bias
         )
     else:
         return (
-            core.ShapedArray(query.shape, query.dtype, sharding=query.sharding, vma=vma),  # grad query
-            core.ShapedArray(key.shape, key.dtype, sharding=key.sharding, vma=vma),  # grad key
-            core.ShapedArray(value.shape, value.dtype, sharding=value.sharding, vma=vma),  # grad value
+            core.ShapedArray(query.shape, query.dtype, sharding=query.sharding, manual_axis_type=mat),  # grad query
+            core.ShapedArray(key.shape, key.dtype, sharding=key.sharding, manual_axis_type=mat),  # grad key
+            core.ShapedArray(value.shape, value.dtype, sharding=value.sharding, manual_axis_type=mat),  # grad value
         )
 
 
