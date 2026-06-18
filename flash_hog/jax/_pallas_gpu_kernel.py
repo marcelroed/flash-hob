@@ -151,16 +151,6 @@ def flash_bwdbwd0(
         D_i = D_ref[:]
 
         def dd_loop_body(k_tile_index, carry, causal_mask=False):
-            # 2-pass fusion: accumulate dD and R in one sweep, then close B in closed form
-            # (was a separate K pass).
-            #
-            # B = sum_k dP'_ik P_ik, with dP'_ik = dPa_ik - dP_ik*dD_i - ddS_ik*D_i + dP_ik*ddS_ik.
-            # The per-row scalars dD_i, D_i factor out of the sum:
-            #   B = r1 - dD_i*r2 - D_i*dD_i + r3,  r1=sum dPa*P, r2=sum dP*P, r3=sum dP*ddS*P.
-            # Two simplifications:
-            #   - r2 = sum_k dP_ik P_ik = dO_i . (sum_k P_ik V_k) = dO_i . O_i = D_i (precomputed).
-            #   - r1 and r3 share coefficient +1, so accumulate them together as R = r1 + r3.
-            # Hence B = R - 2*D_i*dD_i.
             dD_i_acc, R_acc = carry
             kslice = pl.ds(k_tile_index * config.tile_k, config.tile_k)
             k_indices = kslice.start + jnp.arange(kslice.size)
@@ -194,7 +184,6 @@ def flash_bwdbwd0(
         dD_i, R_i = carry
         dD_ref[:] = dD_i
 
-        # B in closed form from the fused pass (uses the r2 = D_i identity).
         B_i = R_i - 2.0 * D_i * dD_i
         B_ref[:] = B_i
 
@@ -217,7 +206,6 @@ def flash_bwdbwd0(
 
             ddS_ij = (pl.dot(ddQ_i, K_j.T) + pl.dot(Q_i, ddK_j.T)) * scale
 
-            # ddS centered by its P-weighted row reduction dD_i; shared by dP2 and ddP.
             ddS_centered_ij = ddS_ij - dD_i[:, None]
             scaled_P_ij = scale * P_ij
 
@@ -330,7 +318,6 @@ def flash_bwdbwd0(
 
                 ddS_ij = (pl.dot(ddQ_i, K_j.T) + pl.dot(Q_i, ddK_j.T)) * scale
 
-                # ddS centered by its P-weighted row reduction dD_i; shared by dP2 and ddP.
                 ddS_centered_ij = ddS_ij - dD_i[:, None]
                 scaled_P_ij = scale * P_ij
 
