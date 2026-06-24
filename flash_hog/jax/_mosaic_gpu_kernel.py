@@ -18,6 +18,21 @@ _ELEMS = _SWIZZLE // 2
 _TR = (plgpu.TilingTransform((8, _ELEMS)), plgpu.SwizzleTransform(_SWIZZLE))
 
 
+def _tr(minor_elems, dtype_bytes=2):
+    """SMEM tiling+swizzle transform for a buffer whose minor dim is `minor_elems`.
+
+    The fixed 128B swizzle forces the swizzled (minor) dimension to be a multiple
+    of 64 bf16 elements, which rules out 16/32-wide score tiles.  Pick the largest
+    legal swizzle atom (128/64/32/16 bytes) that the minor dimension supports so
+    smaller block sizes also get a valid layout.
+    """
+    swizzle = min(_SWIZZLE, minor_elems * dtype_bytes)
+    if swizzle not in (16, 32, 64, 128):
+        raise ValueError(f"minor dim {minor_elems} has no legal swizzle atom")
+    elems = swizzle // dtype_bytes
+    return (plgpu.TilingTransform((8, elems)), plgpu.SwizzleTransform(swizzle))
+
+
 def _mm(a, b, m, n):
     # wgmma into an accumulator
     def body(acc):
@@ -31,7 +46,8 @@ BK = 64
 K_PIPELINE_DEPTH = 3
 
 
-def _stage1(Q, K, V, dO, ddQ, ddK, ddV, L, D, scale):
+def _stage1(Q, K, V, dO, ddQ, ddK, ddV, L, D, scale, *,
+            BQ=BQ, BK=BK, K_PIPELINE_DEPTH=K_PIPELINE_DEPTH):
     B, H, T, hd = Q.shape
     scale = float(scale)
     scale2 = scale * LOG2E
@@ -190,9 +206,13 @@ def _stage1(Q, K, V, dO, ddQ, ddK, ddV, L, D, scale):
 
     def entry(Q_g, dO_g, ddQ_g, L_g, D_g, K_g, V_g, ddK_g, ddV_g,
               dQ2_g, ddO_g, dD_g, B_g):
-        qsh = plgpu.SMEM((2, BQ, hd), jnp.bfloat16, transforms=_TR)
-        ksh = plgpu.SMEM((K_PIPELINE_DEPTH, BK, hd), jnp.bfloat16, transforms=_TR)
-        ash = plgpu.SMEM((2, BQ, BK), jnp.bfloat16, transforms=_TR)
+        # wgmma requires both operands of a matmul to share one swizzle, and the
+        # score tile (minor=BK) is multiplied against K/V (minor=hd); pick the
+        # largest swizzle that fits the smallest participating minor dim.
+        tr = _tr(min(hd, BK))
+        qsh = plgpu.SMEM((2, BQ, hd), jnp.bfloat16, transforms=tr)
+        ksh = plgpu.SMEM((K_PIPELINE_DEPTH, BK, hd), jnp.bfloat16, transforms=tr)
+        ash = plgpu.SMEM((2, BQ, BK), jnp.bfloat16, transforms=tr)
         scsh = plgpu.SMEM((2, 3, BQ), jnp.float32)
         pl.run_scoped(
             lambda *sc: kernel(Q_g, dO_g, ddQ_g, L_g, D_g, K_g, V_g, ddK_g, ddV_g,
@@ -221,7 +241,8 @@ BQ2 = 64
 Q_PIPELINE_DEPTH = 4
 
 
-def _stage2(Q, K, V, dO, ddQ, ddK, ddV, L, D, dD, B, scale):
+def _stage2(Q, K, V, dO, ddQ, ddK, ddV, L, D, dD, B, scale, *,
+            BQ2=BQ2, BK2=BK2, Q_PIPELINE_DEPTH=Q_PIPELINE_DEPTH):
     Bsz, H, T, hd = Q.shape
     scale = float(scale)
     scale2 = scale * LOG2E
@@ -358,10 +379,13 @@ def _stage2(Q, K, V, dO, ddQ, ddK, ddV, L, D, dD, B, scale):
 
     def entry(K_g, V_g, ddK_g, ddV_g, Q_g, dO_g, ddQ_g, L_g, D_g, dD_g, B_g,
               dK2_g, dV2_g):
-        ksh = plgpu.SMEM((2, BK2, hd), jnp.bfloat16, transforms=_TR)
-        qsh = plgpu.SMEM((Q_PIPELINE_DEPTH, BQ2, hd), jnp.bfloat16, transforms=_TR)
+        # Score tile minor is BQ2, multiplied against Q/dO (minor=hd); share one
+        # swizzle sized to the smallest participating minor dim.
+        tr = _tr(min(hd, BQ2))
+        ksh = plgpu.SMEM((2, BK2, hd), jnp.bfloat16, transforms=tr)
+        qsh = plgpu.SMEM((Q_PIPELINE_DEPTH, BQ2, hd), jnp.bfloat16, transforms=tr)
         vsh = plgpu.SMEM((Q_PIPELINE_DEPTH, BQ2), jnp.float32)
-        ash = plgpu.SMEM((2, BK2, BQ2), jnp.bfloat16, transforms=_TR)
+        ash = plgpu.SMEM((2, BK2, BQ2), jnp.bfloat16, transforms=tr)
         pl.run_scoped(
             lambda *sc: kernel(K_g, V_g, ddK_g, ddV_g, Q_g, dO_g, ddQ_g,
                                L_g, D_g, dD_g, B_g, dK2_g, dV2_g, sc),
@@ -384,8 +408,18 @@ def _stage2(Q, K, V, dO, ddQ, ddK, ddV, L, D, dD, B, scale):
     )(K, V, ddK, ddV, Q, dO, ddQ, L, D, dD, B)
 
 
-def flash_bwdbwd_mosaic(Q, K, V, O, dO, ddQ, ddK, ddV, L, *, scale):
+def flash_bwdbwd_mosaic(Q, K, V, O, dO, ddQ, ddK, ddV, L, *, scale,
+                        stage1_cfg=None, stage2_cfg=None):
+    """Two-stage Mosaic double-backward.
+
+    stage1_cfg / stage2_cfg are optional dicts of tile-size overrides:
+      stage1_cfg keys: BQ, BK, K_PIPELINE_DEPTH
+      stage2_cfg keys: BQ2, BK2, Q_PIPELINE_DEPTH
+    Omitted keys fall back to the module defaults.
+    """
+    stage1_cfg = stage1_cfg or {}
+    stage2_cfg = stage2_cfg or {}
     D = jnp.sum(dO.astype(jnp.float32) * O.astype(jnp.float32), axis=-1)
-    dQ2, ddO, dD, B = _stage1(Q, K, V, dO, ddQ, ddK, ddV, L, D, scale)
-    dK2, dV2 = _stage2(Q, K, V, dO, ddQ, ddK, ddV, L, D, dD, B, scale)
+    dQ2, ddO, dD, B = _stage1(Q, K, V, dO, ddQ, ddK, ddV, L, D, scale, **stage1_cfg)
+    dK2, dV2 = _stage2(Q, K, V, dO, ddQ, ddK, ddV, L, D, dD, B, scale, **stage2_cfg)
     return dQ2, dK2, dV2, ddO

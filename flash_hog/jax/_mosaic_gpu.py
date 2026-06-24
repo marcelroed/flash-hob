@@ -39,8 +39,7 @@ def _on_hopper() -> bool:
     return all(getattr(d, "compute_capability", "") == "9.0" for d in devices)
 
 
-def supported(*, is_causal: bool, seq_len: int, head_dim: int,
-              num_q_heads: int, num_kv_heads: int) -> bool:
+def supported(*, is_causal: bool, seq_len: int, head_dim: int, num_q_heads: int, num_kv_heads: int) -> bool:
     """True iff the Mosaic kernels can serve this shape on this machine."""
     return (
         is_causal
@@ -52,6 +51,25 @@ def supported(*, is_causal: bool, seq_len: int, head_dim: int,
     )
 
 
+# Tuned tile-size configs for the two Mosaic stages (set via set_tuned_tiles()).
+# Empty dicts mean "use the kernel module's compiled-in defaults".
+_TUNED_STAGE1_CFG: dict = {}
+_TUNED_STAGE2_CFG: dict = {}
+
+
+def set_tuned_tiles(stage1_cfg: dict | None = None, stage2_cfg: dict | None = None) -> None:
+    """Install tuned tile-size overrides for the Mosaic kernels.
+
+    stage1_cfg keys: BQ, BK, K_PIPELINE_DEPTH
+    stage2_cfg keys: BQ2, BK2, Q_PIPELINE_DEPTH
+    Pass None/empty to clear and fall back to the kernel defaults.
+    """
+    global _TUNED_STAGE1_CFG, _TUNED_STAGE2_CFG
+    _TUNED_STAGE1_CFG = dict(stage1_cfg or {})
+    _TUNED_STAGE2_CFG = dict(stage2_cfg or {})
+    jax.clear_caches()
+
+
 def flash_bwdbwd(*, Q, K, V, O, dO, ddQ, ddK, ddV, L, scale: float):
     """Causal-attention double-backward. Arguments are BTNH; returns dQ2, dK2, dV2, ddO."""
     kernel = _kernel()
@@ -61,12 +79,16 @@ def flash_bwdbwd(*, Q, K, V, O, dO, ddQ, ddK, ddV, L, scale: float):
     def to_bhtd(x):
         return jnp.transpose(x, (0, 2, 1, 3))
 
-    Qb, Kb, Vb, Ob, dOb, ddQb, ddKb, ddVb = (
-        to_bhtd(x).astype(jnp.bfloat16) for x in (Q, K, V, O, dO, ddQ, ddK, ddV)
-    )
+    Qb, Kb, Vb, Ob, dOb, ddQb, ddKb, ddVb = (to_bhtd(x).astype(jnp.bfloat16) for x in (Q, K, V, O, dO, ddQ, ddK, ddV))
     Lf = L.reshape(B, N, T).astype(jnp.float32)
 
-    dQ2, dK2, dV2, ddO = kernel(Qb, Kb, Vb, Ob, dOb, ddQb, ddKb, ddVb, Lf, scale=scale)
+    dQ2, dK2, dV2, ddO = kernel(
+        Qb, Kb, Vb, Ob,
+        dOb, ddQb, ddKb, ddVb,
+        Lf,
+        scale=scale,
+        stage1_cfg=_TUNED_STAGE1_CFG, stage2_cfg=_TUNED_STAGE2_CFG,
+    )  # fmt: skip
     return tuple(to_bhtd(x).astype(Q.dtype) for x in (dQ2, dK2, dV2, ddO))
 
 
@@ -101,7 +123,7 @@ def enable() -> None:
         dQ2, dK2, dV2, ddO = flash_bwdbwd(
             Q=query, K=key, V=value, O=out, dO=dO,
             ddQ=ddQ, ddK=ddK, ddV=ddV, L=activation, scale=scale,
-        )
+        )  # fmt: skip
         return (dQ2, dK2, dV2, None, None), ddO
 
     _original_rule = default_rule
