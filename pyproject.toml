@@ -9,6 +9,7 @@ dependencies = [
     "einops>=0.8.1",
     "jax[cuda13]>=0.10.0; sys_platform == 'linux'",
     "jax>=0.10.0; sys_platform == 'darwin'",
+    "tune-jax>=0.7.2",
 ]
 
 [build-system]
