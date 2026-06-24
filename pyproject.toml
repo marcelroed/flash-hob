@@ -3,11 +3,19 @@ name = "flash-hog"
 version = "0.6.0"
 description = "Kernels for higher order gradients of Flash Attention."
 readme = "README.md"
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "chex>=0.1.91",
     "einops>=0.8.1",
     "jax[cuda13]>=0.10.0; sys_platform == 'linux'",
+    # FA4 beta18 / quack-kernels 0.5.2 are built against cutlass-dsl 4.6.0.dev0;
+    # older 4.5.x emits incompatible MLIR at kernel-compile time. The [cu13] extra
+    # pulls nvidia-cutlass-dsl-libs-cu13, a CUDA-13 build of the MLIR codegen
+    # backend, so the DSL reports CUDA_VERSION (13, 3) natively (codegen targets
+    # CUDA 13, not the base wheel's 12.9). The constraint-dependencies below hold
+    # the jax CUDA runtime at 13.3.x / cuDNN 9.23 so the cuDNN baseline keeps
+    # building valid attention plans.
+    "nvidia-cutlass-dsl[cu13]>=4.6.0.dev0; sys_platform == 'linux'",
     "jax>=0.10.0; sys_platform == 'darwin'",
 ]
 
@@ -29,6 +37,68 @@ required-environments = [
     "sys_platform == 'darwin'",                                  # Allow installs on MacOS
 ]
 index-strategy = "unsafe-best-match"
+prerelease = "allow"
+
+# Without the cutlass [cu13] metapackage (absent at 4.6.0.dev0), jax-cuda13-plugin
+# only lower-bounds the CUDA runtime, so the resolver slides it down to 13.0.x and
+# cuDNN 9.20 -- which fails to build attention plans. Constrain the jax CUDA stack
+# to the 13.3.x / cuDNN 9.23 versions that work. These only apply if a package is
+# already in the graph (they constrain, never add).
+constraint-dependencies = [
+    "nvidia-cuda-runtime>=13.3; sys_platform == 'linux'",
+    "nvidia-cuda-nvrtc>=13.3; sys_platform == 'linux'",
+    "nvidia-cuda-cupti>=13.3; sys_platform == 'linux'",
+    "nvidia-cudnn-cu13>=9.23; sys_platform == 'linux'",
+    "nvidia-nvjitlink>=13.3; sys_platform == 'linux'",
+    "nvidia-cufft>=12.3; sys_platform == 'linux'",
+    "nvidia-cusolver>=12.2; sys_platform == 'linux'",
+    "nvidia-cusparse>=12.8; sys_platform == 'linux'",
+    "nvidia-nccl-cu13>=2.30; sys_platform == 'linux'",
+    "nvidia-nvshmem-cu13>=3.7; sys_platform == 'linux'",
+]
+
+# The FA4 CuTe-DSL kernels live in the flash-attention repo's `flash_attn/cute`
+# subpackage (installed as `flash-attn-4`), built without compiling any CUDA.
+[tool.uv.sources]
+flash-attn-4 = { path = "../flash-attention/flash_attn/cute" }
+# FA4 beta18 (commit 940cd96, 2026-06-19 23:56) matches quack commit 1fb13ab
+# (2026-06-20 00:21). PyPI quack-kernels 0.5.2 was cut from a *later* commit
+# (256b2e3, 2026-06-20 00:36) that REMOVED `major_mode_size` from
+# make_smem_layout and still has the cutlass-4.5-era `tRS_sC[..., dst_idx]`
+# dynamic-index in copy_utils -- both of which break under cutlass 4.6.0.dev0.
+# Pin to 1fb13ab (the parent of the regression) which natively has the 5-arg
+# make_smem_layout and the explicit-None `tRS_sC[None, None, None, dst_idx]`.
+quack-kernels = { git = "https://github.com/Dao-AILab/quack.git", rev = "1fb13ab4922c98d66e82888d47d1512943fcd18f" }
+
+# Strip the torch / torch-c-dlpack-ext requirements: the FA4 CuTe kernels are
+# driven from JAX (via cutlass.jax.cutlass_call) and only reference torch at
+# import time, which the experiments harness satisfies with a tiny shim. Keeping
+# torch out of the resolution keeps this a pure-JAX + CuTe-DSL environment.
+[[tool.uv.dependency-metadata]]
+name = "flash-attn-4"
+requires-dist = [
+    "nvidia-cutlass-dsl[cu13]",
+    "einops",
+    "typing-extensions",
+    "apache-tvm-ffi",
+    "quack-kernels",
+]
+
+[[tool.uv.dependency-metadata]]
+name = "quack-kernels"
+requires-dist = [
+    "nvidia-cutlass-dsl[cu13]",
+    "apache-tvm-ffi",
+    "einops",
+]
+
+# flash-attn-4 (path source) still pulls torch-c-dlpack-ext, which depends on
+# torch and forces a CUDA 13.0 downgrade of the jax stack. We never import
+# torch-c-dlpack-ext on the CuTe-from-JAX path, so drop its torch requirement;
+# this keeps torch out and the CUDA 13.3 runtime intact.
+[[tool.uv.dependency-metadata]]
+name = "torch-c-dlpack-ext"
+requires-dist = []
 
 [project.scripts]
 main = "flash_hog.main:main"
@@ -45,6 +115,17 @@ extend-select = ["ARG005"]
 [tool.pytest.ini_options]
 addopts = "--pdbcls=IPython.terminal.debugger:TerminalPdb"
 
+# nvidia-cutlass-dsl ships `cutlass` nested under
+# nvidia_cutlass_dsl/python_packages/ and exposes it via an *executable* .pth
+# (nvidia_cutlass_dsl.pth runs code to inject that dir into sys.path). ty -- like
+# all static checkers -- won't execute .pth code, so `import cutlass` is
+# unresolvable until we add that dir to module resolution explicitly.
+# NOTE: the python3.13 segment is intrinsic to the venv layout -- ty does NOT
+# expand globs here (an unmatched/glob path makes ty hard-error), so this must be
+# a literal directory. Bump it in lockstep with requires-python / .python-version.
+[tool.ty.environment]
+extra-paths = [".venv/lib/python3.13/site-packages/nvidia_cutlass_dsl/python_packages"]
+
 [dependency-groups]
 dev = [
     "equinox>=0.13.4",
@@ -53,4 +134,12 @@ dev = [
     "pytest>=9.0.2",
     "ruff>=0.15.4",
     "ty>=0.0.19",
+]
+# FlashAttention-4 CuTe-DSL kernels for the experiments/ benchmarks (no torch).
+experiments = [
+    "flash-attn-4; sys_platform == 'linux'",
+    # version pinned via [tool.uv.sources] git rev 1fb13ab (declares 0.5.0); the
+    # PyPI 0.5.2 has cutlass-4.6 regressions (see the sources comment above).
+    "quack-kernels; sys_platform == 'linux'",
+    "apache-tvm-ffi>=0.1.6,<0.2; sys_platform == 'linux'",
 ]
