@@ -31,7 +31,7 @@ If you use Flash Hog in your work, please cite it as:
 
 ```bibtex
 @software{roed2025flashhog,
-  author = {Marcel R{\o}d},
+  author = {Marcel R{\o}d and Herman Brunborg and Neil Band and Kesavan Ramakrishnan and Stephen Ge},
   title = {{F}lash {H}og: Memory-Efficient Kernels for Higher-Order Gradients of Flash Attention},
   url = {https://github.com/marcelroed/flash-hog},
   year = {2025},
