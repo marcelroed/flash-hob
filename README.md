@@ -25,3 +25,15 @@ The equations we implement are the following:
 <p align="center">
 <img src="assets/handwritten_equations.png" alt="Equations" width="512"/>
 </p>
+
+## Citation
+If you use Flash Hog in your work, please cite it as:
+
+```bibtex
+@software{roed2025flashhog,
+  author = {Marcel R{\o}d},
+  title = {{F}lash {H}og: Memory-Efficient Kernels for Higher-Order Gradients of Flash Attention},
+  url = {https://github.com/marcelroed/flash-hog},
+  year = {2025},
+}
+```
