@@ -146,50 +146,12 @@ def flash_bwdbwd0(
         # qslice = pl.ds(q_tile_index * config.tile_q, config.tile_q).
         q_indices = q_tile_index * config.tile_q + jnp.arange(config.tile_q)
 
-        def dd_loop_body(k_tile_index, carry, causal_mask=False):
-            dD_i_acc = carry
-            kslice = pl.ds(k_tile_index * config.tile_k, config.tile_k)
-            k_indices = kslice.start + jnp.arange(kslice.size)
-
-            K_j = K_ref[kslice, :]
-            # V_j = V_ref[kslice, :]
-            ddK_j = ddK_ref[kslice, :]
-            # ddV_j = ddV_ref[kslice, :]
-
-            S_ij = pl.dot(Q_i, K_j.T) * scale
-            S_ij = maybe_causal_mask(S_ij, q_indices, k_indices, causal_mask)
-
-            P_ij = jnp.exp(S_ij - L_i[:, None])
-
-            # dP_ij = pl.dot(dO_i, V_j.T)
-            ddS_ij = (pl.dot(ddQ_i, K_j.T) + pl.dot(Q_i, ddK_j.T)) * scale
-            # ddS_ij = maybe_causal_mask(ddS_ij, q_indices, k_indices, causal_mask)
-
-            dD_i = jnp.sum(ddS_ij * P_ij, axis=1)
-            dD_i_acc += dD_i
-            return dD_i_acc
-
-        if mask_type == MaskType.CAUSAL:
-            # How many k tiles are all ones?
-            # num_unmasked_k_tiles = (q_tile_index * config.tile_q - config.tile_k + 1) // config.tile_k
-            # # How many k tiles in total (the difference requires causal masking)
-            # num_required_k_tiles = pl.cdiv((q_tile_index + 1) * config.tile_q - 1, config.tile_k)
-
-            num_unmasked_k_tiles = pl.cdiv(q_tile_index * config.tile_q - config.tile_k + 1, config.tile_k)
-            num_required_k_tiles = jnp.minimum(pl.cdiv((q_tile_index + 1) * config.tile_q - 1, config.tile_k) + 1, pl.cdiv(n_keys, config.tile_k))
-            dD_i = jax.lax.fori_loop(0, num_unmasked_k_tiles, dd_loop_body, jnp.zeros((config.tile_q,), dtype=jnp.float32))
-            dD_i = jax.lax.fori_loop(num_unmasked_k_tiles, num_required_k_tiles, partial(dd_loop_body, causal_mask=True), dD_i)
-
-            # dD_i = jax.lax.fori_loop(0, pl.cdiv(n_keys, config.tile_k), partial(dd_loop_body, causal_mask=True), jnp.zeros((config.tile_q,), dtype=jnp.float32))
-        else:
-            dD_i = jax.lax.fori_loop(0, pl.cdiv(n_keys, config.tile_k), dd_loop_body, jnp.zeros((config.tile_q,), dtype=jnp.float32))
-        dD_ref[:] = dD_i
-
-        D_i = D_ref[:]
         dO_i = dO_ref[:, :]
 
-        def b_loop_body(k_tile_index, carry, causal_mask=False):
-            B_i_acc = carry
+        def dd_loop_body(k_tile_index, carry, causal_mask=False):
+            # CHANGED (2-pass): this pass now also accumulates r1/r2/r3, the pieces of
+            # B = r1 - dD*r2 - D*dD + r3, so the separate B pass is no longer needed.
+            dD_i_acc, r1_acc, r2_acc, r3_acc = carry
             kslice = pl.ds(k_tile_index * config.tile_k, config.tile_k)
             k_indices = kslice.start + jnp.arange(kslice.size)
 
@@ -200,28 +162,33 @@ def flash_bwdbwd0(
 
             S_ij = pl.dot(Q_i, K_j.T) * scale
             S_ij = maybe_causal_mask(S_ij, q_indices, k_indices, causal_mask)
+
             P_ij = jnp.exp(S_ij - L_i[:, None])
 
             dP_ij = pl.dot(dO_i, V_j.T)
-
             ddS_ij = (pl.dot(ddQ_i, K_j.T) + pl.dot(Q_i, ddK_j.T)) * scale
+            dPa_ij = pl.dot(dO_i, ddV_j.T)
 
-            dP2_ij = pl.dot(dO_i, ddV_j.T) - dP_ij * dD_i[:, None] - ddS_ij * D_i[:, None] + dP_ij * ddS_ij
-            B_i = jnp.sum(dP2_ij * P_ij, axis=1)
-            B_i_acc += B_i
+            dD_i_acc += jnp.sum(ddS_ij * P_ij, axis=1)
+            r1_acc += jnp.sum(dPa_ij * P_ij, axis=1)
+            r2_acc += jnp.sum(dP_ij * P_ij, axis=1)
+            r3_acc += jnp.sum(dP_ij * ddS_ij * P_ij, axis=1)
+            return (dD_i_acc, r1_acc, r2_acc, r3_acc)
 
-            return B_i_acc
-
+        zeros = (jnp.zeros((config.tile_q,), dtype=jnp.float32),) * 4
         if mask_type == MaskType.CAUSAL:
-            # num_unmasked_k_tiles = (q_tile_index * config.tile_q - config.tile_k + 1) // config.tile_k
             num_unmasked_k_tiles = pl.cdiv(q_tile_index * config.tile_q - config.tile_k + 1, config.tile_k)
             num_required_k_tiles = jnp.minimum(pl.cdiv((q_tile_index + 1) * config.tile_q - 1, config.tile_k) + 1, pl.cdiv(n_keys, config.tile_k))
-            B_i = jax.lax.fori_loop(0, num_unmasked_k_tiles, b_loop_body, jnp.zeros((config.tile_q,), dtype=jnp.float32))
-            B_i = jax.lax.fori_loop(num_unmasked_k_tiles, num_required_k_tiles, partial(b_loop_body, causal_mask=True), B_i)
-
-            # B_i = jax.lax.fori_loop(0, pl.cdiv(n_keys, config.tile_k), partial(b_loop_body, causal_mask=True), jnp.zeros((config.tile_q,), dtype=jnp.float32))
+            carry = jax.lax.fori_loop(0, num_unmasked_k_tiles, dd_loop_body, zeros)
+            carry = jax.lax.fori_loop(num_unmasked_k_tiles, num_required_k_tiles, partial(dd_loop_body, causal_mask=True), carry)
         else:
-            B_i = jax.lax.fori_loop(0, pl.cdiv(n_keys, config.tile_k), b_loop_body, jnp.zeros((config.tile_q,), dtype=jnp.float32))
+            carry = jax.lax.fori_loop(0, pl.cdiv(n_keys, config.tile_k), dd_loop_body, zeros)
+        dD_i, r1_i, r2_i, r3_i = carry
+        dD_ref[:] = dD_i
+
+        D_i = D_ref[:]
+        # CHANGED (2-pass): B in closed form from the fused pass (was a second K pass).
+        B_i = r1_i - dD_i * r2_i - D_i * dD_i + r3_i
         B_ref[:] = B_i
 
         def dQ2_ddO_loop_body(k_tile_index, carry, causal_mask=False):
